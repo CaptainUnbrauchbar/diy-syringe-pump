@@ -2,6 +2,8 @@
 
 This is the code for a DIY syringe pump project. The project is based on an Arduino UNO microcontroller I had lyring around and uses a stepper motor to control the infusion rate of a syringe. The code includes settings for the motor, syringe, and user interface, as well as functions for controlling the motor and displaying information on an LCD screen.
 
+The CAD Files are designed for use with a '50ml BBRAUN Perfusor Syringe' but can easily be adjusted for any other syringe.
+
 Parts list incomplete, following soon
 
 Parts list:
