@@ -3,7 +3,7 @@
     "configurations": [
         {
             "name": "Arduino",
-            "compilerPath": "C:\\Users\\Florian\\AppData\\Local\\Arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\bin\\avr-g++",
+            "compilerPath": "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\bin\\avr-g++",
             "compilerArgs": [
                 "-w",
                 "-std=gnu++11",
@@ -16,18 +16,21 @@
             ],
             "intelliSenseMode": "gcc-x64",
             "includePath": [
-                "C:\\Users\\Florian\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\cores\\arduino",
-                "C:\\Users\\Florian\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\variants\\standard",
-                "C:\\Users\\Florian\\Documents\\Arduino\\libraries\\LiquidCrystal\\src",
-                "C:\\Users\\Florian\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\libraries\\SoftwareSerial\\src",
-                "C:\\Users\\Florian\\Documents\\Arduino\\libraries\\TMCStepper\\src",
-                "C:\\Users\\Florian\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\libraries\\SPI\\src",
-                "c:\\users\\florian\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include",
-                "c:\\users\\florian\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include-fixed",
-                "c:\\users\\florian\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\avr\\include"
+                "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\cores\\arduino",
+                "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\variants\\standard",
+                "C:\\Users\\daflo\\Documents\\Arduino\\libraries\\Adafruit_GFX_Library",
+                "C:\\Users\\daflo\\Documents\\Arduino\\libraries\\Adafruit_BusIO",
+                "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\libraries\\Wire\\src",
+                "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\libraries\\SPI\\src",
+                "C:\\Users\\daflo\\Documents\\Arduino\\libraries\\MCUFRIEND_kbv",
+                "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\libraries\\SoftwareSerial\\src",
+                "C:\\Users\\daflo\\Documents\\Arduino\\libraries\\Adafruit_TouchScreen",
+                "c:\\users\\daflo\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include",
+                "c:\\users\\daflo\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include-fixed",
+                "c:\\users\\daflo\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\avr\\include"
             ],
             "forcedInclude": [
-                "C:\\Users\\Florian\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\cores\\arduino\\Arduino.h"
+                "C:\\Users\\daflo\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.7\\cores\\arduino\\Arduino.h"
             ],
             "cStandard": "c11",
             "cppStandard": "c++11",
