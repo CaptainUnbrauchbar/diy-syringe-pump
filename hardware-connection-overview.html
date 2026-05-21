@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIY Syringe Pump Hardware Connection Overview</title>
+<style>
+:root {
+  --bg: #f2efe7;
+  --panel: #fffdf8;
+  --ink: #1d1b18;
+  --muted: #685f52;
+  --line: #d7cebf;
+  --accent: #0d6b6b;
+  --accent-2: #b54d2e;
+  --warn: #8a6a00;
+  --soft: #f6efe2;
+  --soft-2: #e7f2ef;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Trebuchet MS", Verdana, sans-serif;
+  color: var(--ink);
+  background: linear-gradient(180deg, #efe8da 0%, var(--bg) 100%);
+}
+main {
+  max-width: 1260px;
+  margin: 0 auto;
+  padding: 28px;
+}
+h1, h2, h3, p { margin: 0; }
+.hero {
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #fffdf8 0%, #f7f1e7 100%);
+  box-shadow: 0 12px 30px rgba(40, 31, 15, 0.08);
+}
+.hero h1 {
+  font-size: 34px;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+.hero p {
+  color: var(--muted);
+  max-width: 76ch;
+  line-height: 1.45;
+}
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.badge {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.layout {
+  margin-top: 22px;
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 20px;
+}
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 18px;
+  box-shadow: 0 8px 20px rgba(40, 31, 15, 0.06);
+}
+.card h2 {
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+.card h3 {
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+.card p,
+.card li,
+.card td,
+.card th {
+  line-height: 1.4;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.board-grid {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.pinboard {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #24393e 0%, #162428 100%);
+  color: #f4f9f7;
+  padding: 14px;
+}
+.pinboard h3 {
+  color: #b9ece8;
+  margin-bottom: 10px;
+}
+.pinlist {
+  display: grid;
+  gap: 8px;
+}
+.pin {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+}
+.pin strong {
+  display: inline-grid;
+  place-items: center;
+  min-height: 28px;
+  border-radius: 6px;
+  background: #0f6363;
+  color: #f8ffff;
+}
+.pin.shared strong { background: #92511b; }
+.pin.power strong { background: #7a2f2f; }
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend i {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  display: inline-block;
+}
+.legend .logic { background: #0f6363; }
+.legend .shared { background: #92511b; }
+.legend .power { background: #7a2f2f; }
+.wiring {
+  display: grid;
+  gap: 12px;
+}
+.target {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--soft);
+}
+.target.teal { background: var(--soft-2); }
+.target h3 { margin-bottom: 8px; }
+.target ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  text-align: left;
+}
+th {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.95em;
+  background: #f2ece3;
+  padding: 1px 5px;
+  border-radius: 6px;
+}
+.note {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #e0d4b4;
+  background: #fff8df;
+  color: #4d4020;
+}
+.small {
+  color: var(--muted);
+  font-size: 13px;
+}
+@media (max-width: 980px) {
+  .layout,
+  .board-grid,
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <h1>DIY Syringe Pump Hardware Connection Overview</h1>
+    <p>This page matches the current <code>diy-syringe-pump.ino</code> sketch for <strong>Arduino UNO R4 Minima</strong>. It assumes the 2.4/2.8 inch Uno-style parallel TFT shield is installed, and that the motor is driven through an <strong>Adafruit TMC2209 breakout</strong> with a <strong>single half-duplex UART pin</strong>.</p>
+    <div class="badges">
+      <span class="badge">Target board: UNO R4 Minima</span>
+      <span class="badge">Display: Uno parallel TFT shield</span>
+      <span class="badge">Driver: Adafruit TMC2209 breakout</span>
+      <span class="badge">Current sketch uses UART readback</span>
+    </div>
+  </section>
+
+  <section class="layout">
+    <div class="card">
+      <h2>Quick Wiring Summary</h2>
+      <div class="board-grid">
+        <div class="pinboard">
+          <h3>UNO R4 Pins In Use</h3>
+          <div class="pinlist">
+            <div class="pin"><strong>D0</strong><span>TMC2209 UART net (RX1)</span></div>
+            <div class="pin"><strong>D1</strong><span>TMC2209 UART net (TX1)</span></div>
+            <div class="pin shared"><strong>D2</strong><span>TFT data bit D2</span></div>
+            <div class="pin shared"><strong>D3</strong><span>TFT data bit D3</span></div>
+            <div class="pin shared"><strong>D4</strong><span>TFT data bit D4</span></div>
+            <div class="pin shared"><strong>D5</strong><span>TFT data bit D5</span></div>
+            <div class="pin shared"><strong>D6</strong><span>TFT data bit D6</span></div>
+            <div class="pin shared"><strong>D7</strong><span>TFT data bit D7</span></div>
+            <div class="pin shared"><strong>D8</strong><span>TFT data bit D0, touch XP</span></div>
+            <div class="pin shared"><strong>D9</strong><span>TFT data bit D1, touch YM</span></div>
+            <div class="pin"><strong>D10</strong><span>TMC2209 STEP</span></div>
+            <div class="pin"><strong>D11</strong><span>Backward endstop</span></div>
+            <div class="pin"><strong>D13</strong><span>Buzzer positive</span></div>
+            <div class="pin shared"><strong>A0</strong><span>TFT RD</span></div>
+            <div class="pin shared"><strong>A1</strong><span>TFT WR</span></div>
+            <div class="pin shared"><strong>A2</strong><span>TFT CD/RS, touch XM</span></div>
+            <div class="pin shared"><strong>A3</strong><span>TFT CS, touch YP</span></div>
+            <div class="pin shared"><strong>A4</strong><span>TFT RESET</span></div>
+            <div class="pin"><strong>A5</strong><span>Forward endstop</span></div>
+            <div class="pin power"><strong>5V</strong><span>TMC2209 VDD, TFT shield VCC</span></div>
+            <div class="pin power"><strong>GND</strong><span>Common ground for everything</span></div>
+          </div>
+          <div class="legend">
+            <span><i class="logic"></i> Direct logic signal</span>
+            <span><i class="shared"></i> Shared with TFT/touch shield</span>
+            <span><i class="power"></i> Power or ground</span>
+          </div>
+        </div>
+
+        <div class="wiring">
+          <div class="target teal">
+            <h3>TMC2209 Breakout</h3>
+            <ul>
+              <li><strong>UNO R4 D10</strong> -> <strong>TMC2209 STEP</strong></li>
+              <li><strong>UNO R4 D1 / TX1</strong> -> <strong>TMC2209 UART net</strong></li>
+              <li><strong>UNO R4 D0 / RX1</strong> -> <strong>same TMC2209 UART net</strong></li>
+              <li><strong>UNO R4 5V</strong> -> <strong>TMC2209 VDD</strong></li>
+              <li><strong>UNO R4 GND</strong> -> <strong>TMC2209 GND</strong></li>
+              <li><strong>Motor PSU +</strong> -> <strong>TMC2209 terminal +</strong></li>
+              <li><strong>Motor PSU -</strong> -> <strong>TMC2209 terminal - / GND</strong></li>
+              <li><strong>Stepper coil A</strong> -> <strong>1A / 1B</strong></li>
+              <li><strong>Stepper coil B</strong> -> <strong>2A / 2B</strong></li>
+            </ul>
+          </div>
+
+          <div class="target">
+            <h3>Endstops and Buzzer</h3>
+            <ul>
+              <li><strong>Forward endstop</strong> -> <strong>A5</strong></li>
+              <li><strong>Backward endstop</strong> -> <strong>D11</strong></li>
+              <li><strong>Buzzer +</strong> -> <strong>D13</strong></li>
+              <li><strong>Buzzer -</strong> -> <strong>GND</strong></li>
+            </ul>
+            <p class="small">The TFT shield already occupies <code>D2-D9</code> and <code>A0-A4</code>. Those pins are not free for other hardware.</p>
+          </div>
+
+          <div class="note">
+            <strong>Important TMC2209 UART note:</strong> this sketch does more than send commands; it also verifies readback from the driver. Because the Adafruit breakout has a <strong>single UART pin</strong>, that pin has to sit on a shared half-duplex UART net that reaches <strong>both D1/TX1 and D0/RX1</strong>. A one-way TX-only connection is not enough for this sketch.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What The Sketch Actually Uses</h2>
+      <div class="grid-2">
+        <div>
+          <h3>Used on the TMC2209</h3>
+          <ul>
+            <li><strong>STEP</strong> is used directly from <code>D10</code>.</li>
+            <li><strong>UART</strong> is used for configuration, enable/disable, and motor direction.</li>
+            <li><strong>VDD</strong>, <strong>GND</strong>, and motor power are required.</li>
+            <li><strong>1A / 1B / 2A / 2B</strong> go to the motor coils.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Not used by this sketch</h3>
+          <ul>
+            <li><strong>DIR</strong> is not wired because direction is sent over UART.</li>
+            <li><strong>EN</strong> is not wired because enable is sent over UART.</li>
+            <li><strong>DIAG</strong> and <strong>INDEX</strong> are not connected.</li>
+            <li><strong>MS1 / MS2</strong> are not required because microstepping is configured over UART.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="small" style="margin-top: 12px;">If UART is not working, the sketch will usually stop with a TMC2209 UART error instead of starting the pump.</p>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top: 20px;">
+    <h2>Pin Assignment Table</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>UNO R4 Pin</th>
+            <th>Connected To</th>
+            <th>Purpose</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>D0 / RX1</code></td>
+            <td>TMC2209 UART</td>
+            <td>UART readback from driver</td>
+            <td>Must be on the same single-wire UART net as the breakout UART pin.</td>
+          </tr>
+          <tr>
+            <td><code>D1 / TX1</code></td>
+            <td>TMC2209 UART</td>
+            <td>UART commands to driver</td>
+            <td>USB upload/monitor on UNO R4 is still separate from this pin pair.</td>
+          </tr>
+          <tr>
+            <td><code>D10</code></td>
+            <td>TMC2209 STEP</td>
+            <td>Step pulse output</td>
+            <td>Still required even though other driver control is done over UART.</td>
+          </tr>
+          <tr>
+            <td><code>D11</code></td>
+            <td>Backward endstop</td>
+            <td>Retract/home limit input</td>
+            <td>Moved here because D0 is used for Serial1 on UNO R4.</td>
+          </tr>
+          <tr>
+            <td><code>D13</code></td>
+            <td>Buzzer positive</td>
+            <td>Alarm/status sound</td>
+            <td>Connect buzzer negative to GND.</td>
+          </tr>
+          <tr>
+            <td><code>A5</code></td>
+            <td>Forward endstop</td>
+            <td>Infusion-end limit input</td>
+            <td>Separate from the TFT shield pins.</td>
+          </tr>
+          <tr>
+            <td><code>D2-D9</code></td>
+            <td>TFT shield data bus</td>
+            <td>Parallel display interface</td>
+            <td>The shield expects these exact Uno-style pins.</td>
+          </tr>
+          <tr>
+            <td><code>A0-A4</code></td>
+            <td>TFT shield control pins</td>
+            <td>RD/WR/CD/CS/RESET</td>
+            <td>These are also part of the touch-screen sharing arrangement.</td>
+          </tr>
+          <tr>
+            <td><code>D8, D9, A2, A3</code></td>
+            <td>Resistive touch panel</td>
+            <td>Touch sensing</td>
+            <td>These are shared with the TFT shield and are already handled by the sketch.</td>
+          </tr>
+          <tr>
+            <td><code>5V</code></td>
+            <td>TMC2209 VDD, TFT shield VCC</td>
+            <td>Logic power</td>
+            <td>TMC2209 logic should match the UNO R4's 5 V logic supply.</td>
+          </tr>
+          <tr>
+            <td><code>GND</code></td>
+            <td>All grounds</td>
+            <td>Common reference</td>
+            <td>UNO, TMC2209, motor PSU, buzzer, and endstops must share ground.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="layout" style="margin-top: 20px;">
+    <div class="card">
+      <h2>TFT Shield Map</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Shield Signal</th>
+              <th>UNO R4 Pin</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>LCD_D0</code></td><td><code>D8</code></td><td>Shared with touch <code>XP</code></td></tr>
+            <tr><td><code>LCD_D1</code></td><td><code>D9</code></td><td>Shared with touch <code>YM</code></td></tr>
+            <tr><td><code>LCD_D2</code></td><td><code>D2</code></td><td>Shield bus</td></tr>
+            <tr><td><code>LCD_D3</code></td><td><code>D3</code></td><td>Shield bus</td></tr>
+            <tr><td><code>LCD_D4</code></td><td><code>D4</code></td><td>Shield bus</td></tr>
+            <tr><td><code>LCD_D5</code></td><td><code>D5</code></td><td>Shield bus</td></tr>
+            <tr><td><code>LCD_D6</code></td><td><code>D6</code></td><td>Shield bus</td></tr>
+            <tr><td><code>LCD_D7</code></td><td><code>D7</code></td><td>Shield bus</td></tr>
+            <tr><td><code>LCD_RD</code></td><td><code>A0</code></td><td>Read strobe</td></tr>
+            <tr><td><code>LCD_WR</code></td><td><code>A1</code></td><td>Write strobe</td></tr>
+            <tr><td><code>LCD_CD/RS</code></td><td><code>A2</code></td><td>Shared with touch <code>XM</code></td></tr>
+            <tr><td><code>LCD_CS</code></td><td><code>A3</code></td><td>Shared with touch <code>YP</code></td></tr>
+            <tr><td><code>LCD_RESET</code></td><td><code>A4</code></td><td>Shield reset</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small" style="margin-top: 12px;">If your TFT is a standard Uno shield, you normally do not wire these individually; the shield stacks directly onto the UNO R4 headers.</p>
+    </div>
+
+    <div class="card">
+      <h2>Endstop and Power Notes</h2>
+      <div class="note" style="margin-bottom: 12px;">
+        <strong>Endstop logic:</strong> the sketch sets both endstop inputs to <code>INPUT_PULLUP</code> and treats a <code>HIGH</code> reading as active. That matches a <strong>normally closed (NC)</strong> switch wired between the pin and GND, where the pin goes HIGH when the switch opens at the limit.
+      </div>
+      <ul>
+        <li>If your endstops are <strong>normally open (NO)</strong>, the current logic will not match and you should either rewire them or invert the logic in the sketch.</li>
+        <li>The TMC2209 motor power should come from the motor supply, not from the UNO 5V pin.</li>
+        <li>Motor coil order is not defined by the sketch. If direction or motion is wrong, swap one coil pair or adjust the motor direction setting in software.</li>
+        <li>The sketch configures the TMC2209 for <code>32</code> microsteps over UART and expects address <code>0</code>.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+</body>
+</html>

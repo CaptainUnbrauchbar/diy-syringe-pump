@@ -4,6 +4,10 @@ This is the code for a DIY syringe pump project. The project is based on an Ardu
 
 The CAD Files are designed for use with a '50ml BBRAUN Perfusor Syringe' but can easily be adjusted for any other syringe.
 
+Arduino UNO R4 Minima note: the sketch uses `Serial1` on D0/D1 for the TMC2209 UART on non-AVR boards. For the Adafruit TMC2209 breakout with one `UART` pin, connect that single UART signal to both D1/TX1 and D0/RX1 so the sketch can send commands and read driver status. The backward endstop input moves to D11 on UNO R4.
+
+See [hardware-connection-overview.html](hardware-connection-overview.html) for the full pin assignment and wiring overview.
+
 Parts list incomplete, following soon
 
 Parts list:

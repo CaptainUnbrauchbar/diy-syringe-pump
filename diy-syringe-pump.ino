@@ -1,16 +1,12 @@
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
-#include <MCUFRIEND_kbv.h>
-#include <SoftwareSerial.h>
+#include <EEPROM.h>
 #include <TMCStepper.h>
-#include <TouchScreen.h>
 #include <stddef.h>
 #include <stdio.h>
 
-#if !defined(ARDUINO_ARCH_AVR)
-#error "This sketch requires an AVR board package. Select Arduino Uno and install Arduino AVR Boards."
-#endif
-
+#if defined(ARDUINO_ARCH_AVR)
+#include <SoftwareSerial.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <avr/pgmspace.h>
@@ -18,6 +14,17 @@
 
 #if defined(ARDUINO_AVR_UNO) && !defined(__AVR_ATmega328P__)
 #include <avr/iom328p.h>
+#endif
+#else
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+#ifndef PGM_P
+#define PGM_P const char *
+#endif
+#ifndef pgm_read_byte
+#define pgm_read_byte(address_short) (*(const uint8_t *)(address_short))
+#endif
 #endif
 
 #ifndef PD2
@@ -86,10 +93,18 @@
 // TMC2209 UART config replaces the separate DIR and ENABLE pins, but STEP
 // pulses are still required; the TMC2209 cannot generate motion from UART only.
 #define STEP_PIN 10
+#if defined(ARDUINO_ARCH_AVR)
 #define TMC2209_UART_RX_PIN 11
 #define TMC2209_UART_TX_PIN 12
 #define ENDSTOP_PIN_FORWARD A5
 #define ENDSTOP_PIN_BACKWARD 0
+#else
+// UNO R4 Minima has hardware Serial1 on D0/D1. Move the backward endstop to D11.
+#define TMC2209_UART_RX_PIN 0
+#define TMC2209_UART_TX_PIN 1
+#define ENDSTOP_PIN_FORWARD A5
+#define ENDSTOP_PIN_BACKWARD 11
+#endif
 #define BUZZER_PIN 13
 
 #define TFT_TOUCH_YP A3
@@ -104,14 +119,19 @@
 #define TMC2209_READBACK_ATTEMPTS 3
 #define TMC2209_CURRENT_TOLERANCE_MA 100
 
+#if defined(ARDUINO_ARCH_AVR)
 #define STEP_PORT PORTB
 #define STEP_MASK 0x04
+#endif
 
 #define DEBOUNCE_DELAY_MS 50
 #define DISPLAY_UPDATE_MS 250
 #define STEP_PULSE_US 15
 #define TOUCH_MIN_PRESSURE 5
-#define TOUCH_MAX_PRESSURE 1000
+#define TOUCH_MAX_PRESSURE 1023
+#define TOUCH_ADC_MAX 1023
+#define TOUCH_ANALOG_SAMPLES 4
+#define TOUCH_SETTLE_US 150
 #define TOUCH_DEBOUNCE_MS DEBOUNCE_DELAY_MS
 #define TOUCH_BUTTON_BAR_HEIGHT 54
 #define LEFT_EDGE_COMPENSATION_PX 14
@@ -139,6 +159,327 @@
 #define TFT_DARKGREY 0x7BEF
 #define TFT_NAVY 0x000F
 
+// Cached fast pin access: portOutputRegister/digitalPinToBitMask exist on
+// both AVR and the Renesas UNO R4 cores, but the return widths differ. Use
+// typedefs so the same code path works everywhere.
+#if defined(ARDUINO_ARCH_AVR)
+typedef volatile uint8_t *FastPortReg;
+typedef uint8_t FastPortMask;
+#else
+typedef volatile uint16_t *FastPortReg;
+typedef uint16_t FastPortMask;
+#endif
+
+class UnoParallelTft : public Adafruit_GFX
+{
+public:
+	UnoParallelTft() : Adafruit_GFX(240, 320)
+	{
+	}
+
+	uint16_t readID()
+	{
+		return 0x9341;
+	}
+
+	void begin(uint16_t displayId = 0x9341)
+	{
+		(void)displayId;
+		pinMode(LCD_RD_PIN, OUTPUT);
+		pinMode(LCD_WR_PIN, OUTPUT);
+		pinMode(LCD_CD_PIN, OUTPUT);
+		pinMode(LCD_CS_PIN, OUTPUT);
+		pinMode(LCD_RESET_PIN, OUTPUT);
+		for (uint8_t index = 0; index < 8; index++)
+			pinMode(dataPin(index), OUTPUT);
+
+		// Cache port output register addresses and bitmasks for every TFT
+		// pin so the hot pixel path can use direct register bit twiddling
+		// instead of the (slow) Arduino digitalWrite() function.
+		cachePin(LCD_RD_PIN, rdPortReg_, rdPortMask_);
+		cachePin(LCD_WR_PIN, wrPortReg_, wrPortMask_);
+		cachePin(LCD_CD_PIN, cdPortReg_, cdPortMask_);
+		cachePin(LCD_CS_PIN, csPortReg_, csPortMask_);
+		cachePin(LCD_RESET_PIN, rstPortReg_, rstPortMask_);
+		for (uint8_t index = 0; index < 8; index++)
+			cachePin(dataPin(index), dataPortReg_[index], dataPortMask_[index]);
+
+		fastHigh(rdPortReg_, rdPortMask_);
+		fastHigh(wrPortReg_, wrPortMask_);
+		fastHigh(csPortReg_, csPortMask_);
+		fastHigh(rstPortReg_, rstPortMask_);
+		delay(5);
+		fastLow(rstPortReg_, rstPortMask_);
+		delay(20);
+		fastHigh(rstPortReg_, rstPortMask_);
+		delay(150);
+
+		writeCommand(0x01);
+		delay(150);
+		writeCommand(0x28);
+		writeCommandData(0xCF, (const uint8_t[]){0x00, 0xC1, 0x30}, 3);
+		writeCommandData(0xED, (const uint8_t[]){0x64, 0x03, 0x12, 0x81}, 4);
+		writeCommandData(0xE8, (const uint8_t[]){0x85, 0x00, 0x78}, 3);
+		writeCommandData(0xCB, (const uint8_t[]){0x39, 0x2C, 0x00, 0x34, 0x02}, 5);
+		writeCommandData(0xF7, (const uint8_t[]){0x20}, 1);
+		writeCommandData(0xEA, (const uint8_t[]){0x00, 0x00}, 2);
+		writeCommandData(0xC0, (const uint8_t[]){0x23}, 1);
+		writeCommandData(0xC1, (const uint8_t[]){0x10}, 1);
+		writeCommandData(0xC5, (const uint8_t[]){0x3E, 0x28}, 2);
+		writeCommandData(0xC7, (const uint8_t[]){0x86}, 1);
+		writeCommandData(0x3A, (const uint8_t[]){0x55}, 1);
+		writeCommandData(0xB1, (const uint8_t[]){0x00, 0x18}, 2);
+		writeCommandData(0xB6, (const uint8_t[]){0x08, 0x82, 0x27}, 3);
+		writeCommandData(0xF2, (const uint8_t[]){0x00}, 1);
+		writeCommandData(0x26, (const uint8_t[]){0x01}, 1);
+		writeCommandData(0xE0, (const uint8_t[]){0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1, 0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00}, 15);
+		writeCommandData(0xE1, (const uint8_t[]){0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1, 0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F}, 15);
+		setRotation(0);
+		writeCommand(0x11);
+		delay(120);
+		writeCommand(0x29);
+		delay(20);
+	}
+
+	void drawPixel(int16_t x, int16_t y, uint16_t color) override
+	{
+		if (x < 0 || y < 0 || x >= width() || y >= height())
+			return;
+
+		beginWrite();
+		setAddressWindow(x, y, x, y);
+		writeData16(color);
+		endWrite();
+	}
+
+	void fillRect(int16_t x, int16_t y, int16_t widthValue, int16_t heightValue, uint16_t color) override
+	{
+		if (widthValue <= 0 || heightValue <= 0 || x >= width() || y >= height())
+			return;
+		if (x < 0)
+		{
+			widthValue += x;
+			x = 0;
+		}
+		if (y < 0)
+		{
+			heightValue += y;
+			y = 0;
+		}
+		if (x + widthValue > width())
+			widthValue = width() - x;
+		if (y + heightValue > height())
+			heightValue = height() - y;
+		if (widthValue <= 0 || heightValue <= 0)
+			return;
+
+		beginWrite();
+		setAddressWindow(x, y, x + widthValue - 1, y + heightValue - 1);
+		// CD is already left HIGH at the end of setAddressWindow() so every
+		// subsequent byte is treated as pixel data without re-driving CD.
+		uint32_t pixelCount = (uint32_t)widthValue * (uint32_t)heightValue;
+		uint8_t hi = (uint8_t)(color >> 8);
+		uint8_t lo = (uint8_t)(color & 0xFF);
+		if (hi == lo)
+		{
+			// Solid fill where both color bytes are identical (e.g. BLACK,
+			// WHITE, DARKGREY). Drive the data pins once, then just pulse
+			// WR twice per pixel - no further data-pin updates required.
+			driveDataPins(hi);
+			uint32_t pulses = pixelCount << 1;
+			while (pulses--)
+				pulseWr();
+		}
+		else
+		{
+			while (pixelCount--)
+			{
+				driveDataPins(hi);
+				pulseWr();
+				driveDataPins(lo);
+				pulseWr();
+			}
+		}
+		endWrite();
+	}
+
+	void fillScreen(uint16_t color) override
+	{
+		fillRect(0, 0, width(), height(), color);
+	}
+
+	void drawFastHLine(int16_t x, int16_t y, int16_t widthValue, uint16_t color) override
+	{
+		fillRect(x, y, widthValue, 1, color);
+	}
+
+	void drawFastVLine(int16_t x, int16_t y, int16_t heightValue, uint16_t color) override
+	{
+		fillRect(x, y, 1, heightValue, color);
+	}
+
+	void invalidateDataBus()
+	{
+		dataValueValid_ = false;
+	}
+
+	void setRotation(uint8_t rotation) override
+	{
+		rotation &= 3;
+		Adafruit_GFX::setRotation(rotation);
+		uint8_t madctl = 0x48;
+		switch (rotation)
+		{
+		case 1:
+			madctl = 0x28;
+			break;
+		case 2:
+			madctl = 0x88;
+			break;
+		case 3:
+			madctl = 0xE8;
+			break;
+		default:
+			madctl = 0x48;
+			break;
+		}
+		writeCommandData(0x36, &madctl, 1);
+	}
+
+private:
+	static const uint8_t LCD_RD_PIN = A0;
+	static const uint8_t LCD_WR_PIN = A1;
+	static const uint8_t LCD_CD_PIN = A2;
+	static const uint8_t LCD_CS_PIN = A3;
+	static const uint8_t LCD_RESET_PIN = A4;
+
+	uint8_t dataPin(uint8_t index)
+	{
+		static const uint8_t pins[] = {8, 9, 2, 3, 4, 5, 6, 7};
+		return pins[index];
+	}
+
+	static inline void fastHigh(FastPortReg reg, FastPortMask mask)
+	{
+		*reg |= mask;
+	}
+
+	static inline void fastLow(FastPortReg reg, FastPortMask mask)
+	{
+		*reg &= (FastPortMask)~mask;
+	}
+
+	static void cachePin(uint8_t pin, FastPortReg &regOut, FastPortMask &maskOut)
+	{
+		regOut = (FastPortReg)portOutputRegister(digitalPinToPort(pin));
+		maskOut = (FastPortMask)digitalPinToBitMask(pin);
+	}
+
+	inline void pulseWr()
+	{
+		fastLow(wrPortReg_, wrPortMask_);
+		fastHigh(wrPortReg_, wrPortMask_);
+	}
+
+	inline void driveDataPins(uint8_t value)
+	{
+		// Only touch data pins whose value actually changes. Most UI fills
+		// alternate between two byte values (e.g. 0x00/0x0F for NAVY), so this
+		// avoids redundant port writes on every pixel while preserving the
+		// generic pin mapping for both AVR Uno and UNO R4.
+		uint8_t changed = dataValueValid_ ? (uint8_t)(value ^ lastDataValue_) : 0xFF;
+		if (!changed)
+			return;
+		if (changed & 0x01) { if (value & 0x01) fastHigh(dataPortReg_[0], dataPortMask_[0]); else fastLow(dataPortReg_[0], dataPortMask_[0]); }
+		if (changed & 0x02) { if (value & 0x02) fastHigh(dataPortReg_[1], dataPortMask_[1]); else fastLow(dataPortReg_[1], dataPortMask_[1]); }
+		if (changed & 0x04) { if (value & 0x04) fastHigh(dataPortReg_[2], dataPortMask_[2]); else fastLow(dataPortReg_[2], dataPortMask_[2]); }
+		if (changed & 0x08) { if (value & 0x08) fastHigh(dataPortReg_[3], dataPortMask_[3]); else fastLow(dataPortReg_[3], dataPortMask_[3]); }
+		if (changed & 0x10) { if (value & 0x10) fastHigh(dataPortReg_[4], dataPortMask_[4]); else fastLow(dataPortReg_[4], dataPortMask_[4]); }
+		if (changed & 0x20) { if (value & 0x20) fastHigh(dataPortReg_[5], dataPortMask_[5]); else fastLow(dataPortReg_[5], dataPortMask_[5]); }
+		if (changed & 0x40) { if (value & 0x40) fastHigh(dataPortReg_[6], dataPortMask_[6]); else fastLow(dataPortReg_[6], dataPortMask_[6]); }
+		if (changed & 0x80) { if (value & 0x80) fastHigh(dataPortReg_[7], dataPortMask_[7]); else fastLow(dataPortReg_[7], dataPortMask_[7]); }
+		lastDataValue_ = value;
+		dataValueValid_ = true;
+	}
+
+	void beginWrite()
+	{
+		fastLow(csPortReg_, csPortMask_);
+	}
+
+	void endWrite()
+	{
+		fastHigh(csPortReg_, csPortMask_);
+	}
+
+	void writeCommand(uint8_t command)
+	{
+		beginWrite();
+		writeCommandByte(command);
+		endWrite();
+	}
+
+	void writeCommandData(uint8_t command, const uint8_t *data, uint8_t dataLength)
+	{
+		beginWrite();
+		writeCommandByte(command);
+		while (dataLength--)
+			writeData8(*data++);
+		endWrite();
+	}
+
+	void writeCommandByte(uint8_t command)
+	{
+		fastLow(cdPortReg_, cdPortMask_);
+		write8(command);
+	}
+
+	void writeData8(uint8_t data)
+	{
+		fastHigh(cdPortReg_, cdPortMask_);
+		write8(data);
+	}
+
+	void writeData16(uint16_t data)
+	{
+		writeData8((uint8_t)(data >> 8));
+		writeData8((uint8_t)(data & 0xFF));
+	}
+
+	void setAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+	{
+		writeCommandByte(0x2A);
+		writeData16(x0);
+		writeData16(x1);
+		writeCommandByte(0x2B);
+		writeData16(y0);
+		writeData16(y1);
+		writeCommandByte(0x2C);
+		fastHigh(cdPortReg_, cdPortMask_);
+	}
+
+	void write8(uint8_t value)
+	{
+		driveDataPins(value);
+		pulseWr();
+	}
+
+	FastPortReg dataPortReg_[8];
+	FastPortMask dataPortMask_[8];
+	FastPortReg rdPortReg_;
+	FastPortMask rdPortMask_;
+	FastPortReg wrPortReg_;
+	FastPortMask wrPortMask_;
+	FastPortReg cdPortReg_;
+	FastPortMask cdPortMask_;
+	FastPortReg csPortReg_;
+	FastPortMask csPortMask_;
+	FastPortReg rstPortReg_;
+	FastPortMask rstPortMask_;
+	uint8_t lastDataValue_ = 0;
+	bool dataValueValid_ = false;
+};
+
 #define SETTINGS_EEPROM_ADDRESS 0
 #define SETTINGS_MAGIC 0x5046
 #define SETTINGS_VERSION 7
@@ -153,7 +494,7 @@
 #define SETTINGS_MENU_MOTOR_TEST 7
 #define SETTINGS_MENU_SUPPORT 8
 #define SETTINGS_SUPPORT_TIMEOUT_MS 10000UL
-#define STARTUP_SPLASH_MS 1200UL
+#define STARTUP_SPLASH_MS 1500UL
 #define MAIN_MENU_COUNT 3
 #define MAIN_MENU_START_INFUSION 0
 #define MAIN_MENU_LOAD_SYRINGE 1
@@ -172,18 +513,6 @@
 
 #if START_MENU_COUNT != 2
 #error START_MENU_COUNT must match the explicit START_MENU_* indices.
-#endif
-
-#if defined(EEPE)
-#define EEPROM_WRITE_ENABLE_BIT EEPE
-#else
-#define EEPROM_WRITE_ENABLE_BIT EEWE
-#endif
-
-#if defined(EEMPE)
-#define EEPROM_MASTER_WRITE_ENABLE_BIT EEMPE
-#else
-#define EEPROM_MASTER_WRITE_ENABLE_BIT EEMWE
 #endif
 
 const char PROMPT_INFO_LINE_1[] PROGMEM = "Insert Syringe";
@@ -222,10 +551,11 @@ struct PersistedSettingsVersion6
 	uint16_t crc;
 };
 
-MCUFRIEND_kbv tft;
-TouchScreen touch = TouchScreen(TFT_TOUCH_XP, TFT_TOUCH_YP, TFT_TOUCH_XM, TFT_TOUCH_YM, 300);
+UnoParallelTft tft;
 uint16_t tftWidth = 0;
 uint16_t tftHeight = 0;
+const void *lastScreenFrameKey = NULL;
+bool controlsVisible = false;
 
 void initializeDisplay()
 {
@@ -264,26 +594,67 @@ void drawControls()
 	}
 }
 
-void beginScreen(const __FlashStringHelper *title)
+// Returns true the first time a screen frame is drawn (i.e. when the title
+// has changed since the last call). Callers can use this to know whether
+// a full redraw of body content is needed; when false the chrome (controls
+// bar + header bar) is already on-screen and content can be partially
+// refreshed without flicker.
+bool beginScreen(const __FlashStringHelper *title)
 {
-	tft.fillScreen(TFT_BLACK);
-	tft.fillRect(0, 0, tftWidth, 28, TFT_NAVY);
-	tft.setTextSize(2);
-	tft.setTextColor(TFT_WHITE, TFT_NAVY);
-	tft.setCursor(8, 7);
-	tft.print(title);
-	drawControls();
+	if (lastScreenFrameKey != title)
+	{
+		if (!controlsVisible)
+		{
+			drawControls();
+			controlsVisible = true;
+		}
+		tft.fillRect(0, 0, tftWidth, tftHeight - TOUCH_BUTTON_BAR_HEIGHT, TFT_BLACK);
+		tft.fillRect(0, 0, tftWidth, 28, TFT_NAVY);
+		tft.setTextSize(2);
+		tft.setTextColor(TFT_WHITE, TFT_NAVY);
+		tft.setCursor(8, 7);
+		tft.print(title);
+		lastScreenFrameKey = title;
+		return true;
+	}
+	return false;
 }
 
-void beginScreenP(PGM_P title)
+bool beginScreenP(PGM_P title)
 {
-	tft.fillScreen(TFT_BLACK);
-	tft.fillRect(0, 0, tftWidth, 28, TFT_NAVY);
-	tft.setTextSize(2);
-	tft.setTextColor(TFT_WHITE, TFT_NAVY);
-	tft.setCursor(8, 7);
-	printProgmem(title);
-	drawControls();
+	if (lastScreenFrameKey != title)
+	{
+		if (!controlsVisible)
+		{
+			drawControls();
+			controlsVisible = true;
+		}
+		tft.fillRect(0, 0, tftWidth, tftHeight - TOUCH_BUTTON_BAR_HEIGHT, TFT_BLACK);
+		tft.fillRect(0, 0, tftWidth, 28, TFT_NAVY);
+		tft.setTextSize(2);
+		tft.setTextColor(TFT_WHITE, TFT_NAVY);
+		tft.setCursor(8, 7);
+		printProgmem(title);
+		lastScreenFrameKey = title;
+		return true;
+	}
+	return false;
+}
+
+// Chromeless screen variant for the startup splash and info screens. Just
+// clears the display and tracks the frame key so a re-entry does not blink.
+// frameKey must be a stable pointer (typically the address of a function or
+// PROGMEM string) that is unique to this screen.
+bool beginCleanScreen(const void *frameKey)
+{
+	if (lastScreenFrameKey != frameKey)
+	{
+		tft.fillScreen(TFT_BLACK);
+		lastScreenFrameKey = frameKey;
+		controlsVisible = false;
+		return true;
+	}
+	return false;
 }
 
 void printAt(int16_t x, int16_t y, uint8_t size, uint16_t color, const __FlashStringHelper *text)
@@ -319,31 +690,90 @@ void drawMenuItem(uint8_t row, bool selected, const __FlashStringHelper *label)
 	tft.print(label);
 }
 
+// Internal diff-based renderer used by drawValueScreen / drawValueScreenP.
+// Repaints only the character cells whose digit actually changed and only
+// the underline rect that moved, eliminating the full-line flicker that
+// used to happen on every cursor or digit change.
+static void renderValueScreenBody(bool fullFrame, const char *value, uint8_t cursorColumn, bool cursorVisible)
+{
+	static char lastValue[24];
+	static uint8_t lastCursorColumn = 0xFF;
+	static bool lastCursorVisible = false;
+	static bool cacheValid = false;
+
+	if (fullFrame || !cacheValid)
+	{
+		// First paint on this screen frame: wipe the body regions, draw
+		// the static hint once, and invalidate the per-character cache so
+		// every glyph is forced to repaint below.
+		tft.fillRect(18, 78, tftWidth - 36, 24, TFT_BLACK);
+		tft.fillRect(18, 106, tftWidth - 36, 4, TFT_BLACK);
+		tft.fillRect(18, 138, tftWidth - 36, 10, TFT_BLACK);
+		printAt(18, 138, 1, TFT_CYAN, F("< > Stelle   UP/DN Wert   OK"));
+		for (uint8_t i = 0; i < sizeof(lastValue); i++)
+			lastValue[i] = '\0';
+		lastCursorColumn = 0xFF;
+		lastCursorVisible = false;
+		cacheValid = true;
+	}
+
+	// Per-character diff. Size-3 glyphs occupy an 18x24 cell, and rendering
+	// with setTextColor(fg, bg) atomically overwrites the entire cell, so
+	// we can update a single digit without any visible flicker and without
+	// touching its unchanged neighbours.
+	uint8_t maxCols = (uint8_t)((tftWidth - 36) / 18);
+	if (maxCols > (uint8_t)(sizeof(lastValue) - 1))
+		maxCols = (uint8_t)(sizeof(lastValue) - 1);
+	uint8_t valueLen = (uint8_t)strlen(value);
+	tft.setTextSize(3);
+	tft.setTextColor(TFT_WHITE, TFT_BLACK);
+	for (uint8_t c = 0; c < maxCols; c++)
+	{
+		char newCh = c < valueLen ? value[c] : ' ';
+		if (lastValue[c] != newCh)
+		{
+			int16_t x = 18 + (int16_t)c * 18;
+			tft.setCursor(x, 78);
+			tft.write((uint8_t)newCh);
+			lastValue[c] = newCh;
+		}
+	}
+
+	// Underline cursor diff: clear only the old rect and draw the new one.
+	if (cursorVisible != lastCursorVisible || cursorColumn != lastCursorColumn)
+	{
+		if (lastCursorVisible && lastCursorColumn < maxCols)
+		{
+			int16_t oldX = 18 + (int16_t)lastCursorColumn * 18;
+			tft.fillRect(oldX, 106, 16, 3, TFT_BLACK);
+		}
+		if (cursorVisible)
+		{
+			int16_t newX = 18 + (int16_t)cursorColumn * 18;
+			tft.fillRect(newX, 106, 16, 3, TFT_YELLOW);
+		}
+		lastCursorVisible = cursorVisible;
+		lastCursorColumn = cursorColumn;
+	}
+}
+
 void drawValueScreen(const __FlashStringHelper *title, const char *value, uint8_t cursorColumn, bool cursorVisible)
 {
-	beginScreen(title);
-	printAtText(18, 78, 3, TFT_WHITE, value);
-	printAt(18, 138, 1, TFT_CYAN, F("< > Stelle   UP/DN Wert   OK"));
-	if (cursorVisible)
-	{
-		int16_t cursorX = 18 + (int16_t)cursorColumn * 18;
-		tft.fillRect(cursorX, 106, 16, 3, TFT_YELLOW);
-	}
+	bool fullFrame = beginScreen(title);
+	renderValueScreenBody(fullFrame, value, cursorColumn, cursorVisible);
 }
 
 void drawValueScreenP(PGM_P title, const char *value, uint8_t cursorColumn, bool cursorVisible)
 {
-	beginScreenP(title);
-	printAtText(18, 78, 3, TFT_WHITE, value);
-	printAt(18, 138, 1, TFT_CYAN, F("< > Stelle   UP/DN Wert   OK"));
-	if (cursorVisible)
-	{
-		int16_t cursorX = 18 + (int16_t)cursorColumn * 18;
-		tft.fillRect(cursorX, 106, 16, 3, TFT_YELLOW);
-	}
+	bool fullFrame = beginScreenP(title);
+	renderValueScreenBody(fullFrame, value, cursorColumn, cursorVisible);
 }
 
+#if defined(ARDUINO_ARCH_AVR)
 SoftwareSerial tmc2209Serial(TMC2209_UART_RX_PIN, TMC2209_UART_TX_PIN);
+#else
+HardwareSerial &tmc2209Serial = Serial1;
+#endif
 TMC2209Stepper tmc2209Driver(&tmc2209Serial, TMC2209_UART_R_SENSE, TMC2209_UART_DRIVER_ADDRESS);
 
 enum Button
@@ -395,8 +825,15 @@ enum UiScreen
 
 volatile int32_t stepCounter = 0;
 volatile bool stepPulseHigh = false;
+#if defined(ARDUINO_ARCH_AVR)
 volatile uint16_t timer1HighPulseOcr = 0;
 volatile uint16_t timer1LowPulseOcr = 0;
+#else
+volatile bool motorClockRunning = false;
+volatile uint32_t motorClockHighPulseUs = STEP_PULSE_US;
+volatile uint32_t motorClockLowPulseUs = 0;
+volatile uint32_t motorClockNextTransitionMicros = 0;
+#endif
 volatile bool endstopInterruptLatched = false;
 volatile bool motorClockDirectionForward = true;
 volatile bool motorClockStopOnAnyEndstop = true;
@@ -483,6 +920,11 @@ Button readButton();
 Button readButtonPress();
 RawTouch readTouch();
 bool isPressed(const RawTouch &point);
+int16_t readTouchAxisX();
+int16_t readTouchAxisY();
+int16_t readTouchPressure();
+int16_t averageAnalogRead(uint8_t pin);
+void restoreTouchSharedPins();
 int16_t estimateTouchX(const RawTouch &point);
 int16_t estimateTouchY(const RawTouch &point);
 int16_t applyEdgeCompensation(int16_t value, int16_t zone, int16_t maxOffset, int16_t limit);
@@ -558,8 +1000,6 @@ uint32_t timeDigitFactor();
 uint16_t deliveryDigitFactor();
 uint16_t bolusDigitFactor();
 uint8_t editCursorColumn();
-uint16_t timerPrescalerForIndex(uint8_t index);
-uint8_t timerClockBitsForIndex(uint8_t index);
 uint32_t maxBolusCentiMl();
 uint32_t maxVolumeCentiMl();
 float syringeVolumeMl();
@@ -574,9 +1014,11 @@ void beep(uint16_t delayOn = 15, uint16_t delayOff = 80, bool force = false);
 void updateBuzzer();
 void cancelBuzzerBeeps();
 void serviceWatchdog();
+void serviceMotorClock();
 void watchdogDelay(uint16_t durationMs);
 void serviceWait(uint16_t durationMs);
 void setFlow(float nextFlow);
+void listenTmc2209Serial();
 void setupTmc2209Uart();
 bool verifyTmc2209Readback();
 bool tmc2209CurrentReadbackOk(uint16_t currentMa);
@@ -595,8 +1037,14 @@ void enableMotorDriver();
 void disableMotorDriver();
 void configureEndstopInterrupts();
 void stopMotorClockFromIsr();
+void setStepPinLow();
+void setStepPinHigh();
 bool startPump();
 void stopPump(PumpStopReason reason);
+#if defined(ARDUINO_ARCH_AVR)
+uint16_t timerPrescalerForIndex(uint8_t index);
+uint8_t timerClockBitsForIndex(uint8_t index);
+#endif
 void enableTimer1Interrupt();
 void enableTimer1InterruptPreservePhase();
 bool timerIsRunning();
@@ -640,8 +1088,10 @@ void writePersistentSettings(const PersistedSettings *settings);
 
 void setup()
 {
+#if defined(ARDUINO_ARCH_AVR)
 	MCUSR = 0;
 	wdt_disable();
+#endif
 
 	initializeDisplay();
 
@@ -652,11 +1102,14 @@ void setup()
 
 	digitalWrite(STEP_PIN, LOW);
 	digitalWrite(BUZZER_PIN, LOW);
+	restoreTouchSharedPins();
 	configureEndstopInterrupts();
 	setupTmc2209Uart();
 	disableMotorDriver();
 
+#if defined(ARDUINO_ARCH_AVR)
 	wdt_enable(WDTO_1S);
+#endif
 	loadPersistentSettings();
 
 	startupScreenStartMillis = millis();
@@ -668,6 +1121,7 @@ void setup()
 void loop()
 {
 	serviceWatchdog();
+	serviceMotorClock();
 	updateBuzzer();
 	Button button = readButtonPress();
 	if (currentScreen == SCREEN_STARTUP_SPLASH || currentScreen == SCREEN_STARTUP_INFO)
@@ -741,16 +1195,74 @@ void loop()
 
 RawTouch readTouch()
 {
-	TSPoint point = touch.getPoint();
-	pinMode(TFT_TOUCH_XM, OUTPUT);
-	pinMode(TFT_TOUCH_YP, OUTPUT);
-	RawTouch raw = {point.x, point.y, point.z};
+	RawTouch raw = {readTouchAxisX(), readTouchAxisY(), readTouchPressure()};
+	restoreTouchSharedPins();
 	return raw;
 }
 
 bool isPressed(const RawTouch &point)
 {
 	return point.z >= TOUCH_MIN_PRESSURE && point.z <= TOUCH_MAX_PRESSURE;
+}
+
+int16_t readTouchAxisX()
+{
+	pinMode(TFT_TOUCH_YP, INPUT);
+	pinMode(TFT_TOUCH_YM, INPUT);
+	pinMode(TFT_TOUCH_XP, OUTPUT);
+	pinMode(TFT_TOUCH_XM, OUTPUT);
+	digitalWrite(TFT_TOUCH_XP, HIGH);
+	digitalWrite(TFT_TOUCH_XM, LOW);
+	delayMicroseconds(TOUCH_SETTLE_US);
+	return TOUCH_ADC_MAX - averageAnalogRead(TFT_TOUCH_YP);
+}
+
+int16_t readTouchAxisY()
+{
+	pinMode(TFT_TOUCH_XP, INPUT);
+	pinMode(TFT_TOUCH_XM, INPUT);
+	pinMode(TFT_TOUCH_YP, OUTPUT);
+	pinMode(TFT_TOUCH_YM, OUTPUT);
+	digitalWrite(TFT_TOUCH_YP, HIGH);
+	digitalWrite(TFT_TOUCH_YM, LOW);
+	delayMicroseconds(TOUCH_SETTLE_US);
+	return TOUCH_ADC_MAX - averageAnalogRead(TFT_TOUCH_XM);
+}
+
+int16_t readTouchPressure()
+{
+	pinMode(TFT_TOUCH_XP, OUTPUT);
+	pinMode(TFT_TOUCH_YM, OUTPUT);
+	pinMode(TFT_TOUCH_XM, INPUT);
+	pinMode(TFT_TOUCH_YP, INPUT);
+	digitalWrite(TFT_TOUCH_XP, LOW);
+	digitalWrite(TFT_TOUCH_YM, HIGH);
+	delayMicroseconds(TOUCH_SETTLE_US);
+	int16_t z1 = averageAnalogRead(TFT_TOUCH_XM);
+	int16_t z2 = averageAnalogRead(TFT_TOUCH_YP);
+	int16_t pressure = TOUCH_ADC_MAX - (z2 - z1);
+	return constrain(pressure, 0, TOUCH_ADC_MAX);
+}
+
+int16_t averageAnalogRead(uint8_t pin)
+{
+	uint32_t total = 0;
+	for (uint8_t sample = 0; sample < TOUCH_ANALOG_SAMPLES; sample++)
+		total += analogRead(pin);
+	return (int16_t)(total / TOUCH_ANALOG_SAMPLES);
+}
+
+void restoreTouchSharedPins()
+{
+	pinMode(TFT_TOUCH_XP, OUTPUT);
+	pinMode(TFT_TOUCH_YM, OUTPUT);
+	pinMode(TFT_TOUCH_XM, OUTPUT);
+	pinMode(TFT_TOUCH_YP, OUTPUT);
+	digitalWrite(TFT_TOUCH_XP, LOW);
+	digitalWrite(TFT_TOUCH_YM, LOW);
+	digitalWrite(TFT_TOUCH_XM, HIGH);
+	digitalWrite(TFT_TOUCH_YP, HIGH);
+	tft.invalidateDataBus();
 }
 
 int16_t estimateTouchX(const RawTouch &point)
@@ -864,7 +1376,10 @@ Button readButtonPress()
 
 void showSplash()
 {
-	beginScreen(F("DIY Syringe Pump"));
+	// Startup splash: no controls bar and no header bar - just the centered
+	// product wordmark.
+	if (!beginCleanScreen((const void *)showSplash))
+		return;
 	printAt(24, 68, 3, TFT_WHITE, F("DIY Syringe Pump"));
 	printAt(60, 120, 2, TFT_CYAN, F("A Flo Project"));
 }
@@ -879,9 +1394,13 @@ void showInfoScreen()
 		snprintf(syringeLine, sizeof(syringeLine), "Aktuell%03u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
 	else
 		snprintf(syringeLine, sizeof(syringeLine), "Aktuell %02u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
-	beginScreenP(PROMPT_INFO_LINE_1);
+	bool full = beginScreenP(PROMPT_INFO_LINE_1);
+	if (full)
+		printAt(20, 130, 1, TFT_CYAN, F("OK weiter   UP/DN Motor jog"));
+	// Only repaint the dynamic value line to avoid full-screen flicker when
+	// the user jogs the motor and the syringe volume hint refreshes.
+	tft.fillRect(30, 74, tftWidth - 60, 24, TFT_BLACK);
 	printAtText(30, 74, 3, TFT_WHITE, syringeLine);
-	printAt(20, 130, 1, TFT_CYAN, F("OK weiter   UP/DN Motor jog"));
 }
 
 void updateStartupScreens(Button button)
@@ -972,31 +1491,103 @@ void showCurrentScreen()
 		showSettingsMenu();
 }
 
+static const __FlashStringHelper *mainMenuLabel(uint8_t index)
+{
+	switch (index)
+	{
+	case MAIN_MENU_START_INFUSION:
+		return F("Start Infusion");
+	case MAIN_MENU_LOAD_SYRINGE:
+		return F("Neu einlegen");
+	case MAIN_MENU_SETTINGS:
+		return F("Einstellungen");
+	}
+	return F("?");
+}
+
+static const __FlashStringHelper *startMenuLabel(uint8_t index)
+{
+	switch (index)
+	{
+	case START_MENU_VOLUME_TIME:
+		return F("Volumen & Zeit");
+	case START_MENU_RATE:
+		return F("Infusionsrate");
+	}
+	return F("?");
+}
+
 void showMainMenu()
 {
-	beginScreen(F("Main Menu"));
-	drawMenuItem(0, mainMenuIndex == MAIN_MENU_START_INFUSION, F("Start Infusion"));
-	drawMenuItem(1, mainMenuIndex == MAIN_MENU_LOAD_SYRINGE, F("Neu einlegen"));
-	drawMenuItem(2, mainMenuIndex == MAIN_MENU_SETTINGS, F("Einstellungen"));
+	bool full = beginScreen(F("Main Menu"));
+	static uint8_t lastIndex = 0xFF;
+	if (full || lastIndex >= MAIN_MENU_COUNT)
+	{
+		for (uint8_t i = 0; i < MAIN_MENU_COUNT; i++)
+			drawMenuItem(i, mainMenuIndex == i, mainMenuLabel(i));
+	}
+	else if (lastIndex != mainMenuIndex)
+	{
+		drawMenuItem(lastIndex, false, mainMenuLabel(lastIndex));
+		drawMenuItem(mainMenuIndex, true, mainMenuLabel(mainMenuIndex));
+	}
+	else
+	{
+		drawMenuItem(mainMenuIndex, true, mainMenuLabel(mainMenuIndex));
+	}
+	lastIndex = mainMenuIndex;
 }
 
 void showStartMenu()
 {
-	beginScreen(F("Start Infusion"));
-	drawMenuItem(0, startMenuIndex == START_MENU_VOLUME_TIME, F("Volumen & Zeit"));
-	drawMenuItem(1, startMenuIndex == START_MENU_RATE, F("Infusionsrate"));
+	bool full = beginScreen(F("Start Infusion"));
+	static uint8_t lastIndex = 0xFF;
+	if (full || lastIndex >= START_MENU_COUNT)
+	{
+		for (uint8_t i = 0; i < START_MENU_COUNT; i++)
+			drawMenuItem(i, startMenuIndex == i, startMenuLabel(i));
+	}
+	else if (lastIndex != startMenuIndex)
+	{
+		drawMenuItem(lastIndex, false, startMenuLabel(lastIndex));
+		drawMenuItem(startMenuIndex, true, startMenuLabel(startMenuIndex));
+	}
+	else
+	{
+		drawMenuItem(startMenuIndex, true, startMenuLabel(startMenuIndex));
+	}
+	lastIndex = startMenuIndex;
 }
 
 void showSettingsMenu()
 {
-	beginScreen(F("Einstellungen"));
+	bool full = beginScreen(F("Einstellungen"));
 	uint8_t firstIndex = 0;
 	if (settingsMenuIndex > 1)
 		firstIndex = settingsMenuIndex - 1;
 	if (firstIndex > SETTINGS_MENU_COUNT - 4)
 		firstIndex = SETTINGS_MENU_COUNT - 4;
-	for (uint8_t row = 0; row < 4; row++)
-		printSettingsMenuItem(firstIndex + row, settingsMenuIndex == firstIndex + row);
+
+	static uint8_t lastIndex = 0xFF;
+	static uint8_t lastFirstIndex = 0xFF;
+	if (full || lastIndex >= SETTINGS_MENU_COUNT || lastFirstIndex != firstIndex)
+	{
+		for (uint8_t row = 0; row < 4; row++)
+			printSettingsMenuItem(firstIndex + row, settingsMenuIndex == firstIndex + row);
+	}
+	else if (lastIndex != settingsMenuIndex)
+	{
+		printSettingsMenuItem(lastIndex, false);
+		printSettingsMenuItem(settingsMenuIndex, true);
+	}
+	else
+	{
+		// No selection change: redraw only the current row so toggles like
+		// Bolus AN/AUS, Ton EIN/AUS, Motor inv etc. update without flicker.
+		printSettingsMenuItem(settingsMenuIndex, true);
+	}
+	lastIndex = settingsMenuIndex;
+	lastFirstIndex = firstIndex;
 }
 
 void printSettingsMenuItem(uint8_t itemIndex, bool selected)
@@ -1351,6 +1942,7 @@ void showPumpScreen()
 		snprintf(lineText, sizeof(lineText), "%s  %s ml", elapsedText, volumeText);
 	}
 	beginScreen(F("Infusion laeuft"));
+	tft.fillRect(16, 52, tftWidth - 32, 96, TFT_BLACK);
 	printAt(16, 52, 2, TFT_CYAN, F("Rate ml/h"));
 	printAtText(16, 78, 4, TFT_WHITE, flowText);
 	printAtText(16, 124, 2, TFT_YELLOW, lineText);
@@ -2472,7 +3064,9 @@ void cancelBuzzerBeeps()
 
 void serviceWatchdog()
 {
+#if defined(ARDUINO_ARCH_AVR)
 	wdt_reset();
+#endif
 }
 
 void watchdogDelay(uint16_t durationMs)
@@ -2486,10 +3080,69 @@ void serviceWait(uint16_t durationMs)
 	while (millis() - startMillis < durationMs)
 	{
 		serviceWatchdog();
+		serviceMotorClock();
 		updateBuzzer();
 		uint16_t remaining = durationMs - (uint16_t)(millis() - startMillis);
 		delay(remaining > 5 ? 5 : remaining);
 	}
+}
+
+void setStepPinLow()
+{
+#if defined(ARDUINO_ARCH_AVR)
+	STEP_PORT &= ~STEP_MASK;
+#else
+	digitalWrite(STEP_PIN, LOW);
+#endif
+}
+
+void setStepPinHigh()
+{
+#if defined(ARDUINO_ARCH_AVR)
+	STEP_PORT |= STEP_MASK;
+#else
+	digitalWrite(STEP_PIN, HIGH);
+#endif
+}
+
+void listenTmc2209Serial()
+{
+#if defined(ARDUINO_ARCH_AVR)
+	tmc2209Serial.listen();
+#endif
+}
+
+void serviceMotorClock()
+{
+#if !defined(ARDUINO_ARCH_AVR)
+	if (!motorClockRunning)
+		return;
+
+	uint32_t nowMicros = micros();
+	if ((int32_t)(nowMicros - motorClockNextTransitionMicros) < 0)
+		return;
+
+	if (motorClockStopOnAnyEndstop ? anyEndstopActive() : endstopActiveForDirection(motorClockDirectionForward))
+	{
+		endstopInterruptLatched = true;
+		stopMotorClockFromIsr();
+		return;
+	}
+
+	if (stepPulseHigh)
+	{
+		setStepPinLow();
+		stepPulseHigh = false;
+		stepCounter++;
+		motorClockNextTransitionMicros = nowMicros + motorClockLowPulseUs;
+	}
+	else
+	{
+		setStepPinHigh();
+		stepPulseHigh = true;
+		motorClockNextTransitionMicros = nowMicros + motorClockHighPulseUs;
+	}
+#endif
 }
 
 void setFlow(float nextFlow)
@@ -2519,7 +3172,7 @@ void setupTmc2209Uart()
 	tmc2209ReadbackCurrentMa = 0;
 
 	tmc2209Serial.begin(TMC2209_UART_BAUD);
-	tmc2209Serial.listen();
+	listenTmc2209Serial();
 	tmc2209Driver.begin();
 	tmc2209Driver.pdn_disable(true);
 	tmc2209Driver.mstep_reg_select(true);
@@ -2536,7 +3189,7 @@ bool verifyTmc2209Readback()
 {
 	for (uint8_t attempt = 0; attempt < TMC2209_READBACK_ATTEMPTS; attempt++)
 	{
-		tmc2209Serial.listen();
+		listenTmc2209Serial();
 		tmc2209ConnectionStatus = tmc2209Driver.test_connection();
 		if (tmc2209ConnectionStatus == 0)
 		{
@@ -2599,7 +3252,7 @@ bool startStartupMotorJog(bool forward)
 	stepPulseHigh = false;
 	endstopInterruptLatched = false;
 	interrupts();
-	STEP_PORT &= ~STEP_MASK;
+	setStepPinLow();
 
 	setMotorDirection(forward);
 
@@ -2646,7 +3299,7 @@ bool startMotorSelfTest()
 	stepPulseHigh = false;
 	endstopInterruptLatched = false;
 	interrupts();
-	STEP_PORT &= ~STEP_MASK;
+	setStepPinLow();
 
 	setMotorDirection(motorTestDirectionForward);
 
@@ -2737,7 +3390,7 @@ void disableMotorDriver()
 {
 	if (tmc2209UartConfigured)
 		tmc2209Driver.toff(0);
-	STEP_PORT &= ~STEP_MASK;
+	setStepPinLow();
 }
 
 void configureEndstopInterrupts()
@@ -2747,10 +3400,13 @@ void configureEndstopInterrupts()
 
 void stopMotorClockFromIsr()
 {
-	// ISR-only: AVR enters ISRs with global interrupts disabled, and this code
-	// does not enable nested interrupts. Keep this cutoff direct for endstop latency.
+	// AVR calls this from the Timer1 ISR; UNO R4 calls it from serviceMotorClock().
+#if defined(ARDUINO_ARCH_AVR)
 	TIMSK1 &= ~(1 << OCIE1A);
-	STEP_PORT &= ~STEP_MASK;
+#else
+	motorClockRunning = false;
+#endif
+	setStepPinLow();
 }
 
 bool startPump()
@@ -2789,7 +3445,7 @@ bool startPump()
 	stepPulseHigh = false;
 	endstopInterruptLatched = false;
 	interrupts();
-	STEP_PORT &= ~STEP_MASK;
+	setStepPinLow();
 
 	if (!configureTimer1(requestedStepRateHz))
 	{
@@ -2854,15 +3510,22 @@ void enableTimer1Interrupt()
 {
 	noInterrupts();
 	stepPulseHigh = false;
+#if defined(ARDUINO_ARCH_AVR)
 	TCNT1 = 0;
 	OCR1A = timer1LowPulseOcr;
 	TIFR1 |= (1 << OCF1A);
 	TIMSK1 |= (1 << OCIE1A);
+#else
+	setStepPinLow();
+	motorClockNextTransitionMicros = micros() + motorClockLowPulseUs;
+	motorClockRunning = true;
+#endif
 	interrupts();
 }
 
 void enableTimer1InterruptPreservePhase()
 {
+#if defined(ARDUINO_ARCH_AVR)
 	// Schaltet OCIE1A scharf, ohne TCNT1/OCR1A anzufassen.
 	// Wird nach configureTimer1PreservePhase() benutzt, damit der
 	// dort proportional skalierte Zaehlerstand erhalten bleibt.
@@ -2870,12 +3533,23 @@ void enableTimer1InterruptPreservePhase()
 	TIFR1 |= (1 << OCF1A);
 	TIMSK1 |= (1 << OCIE1A);
 	interrupts();
+#else
+	noInterrupts();
+	if (!motorClockRunning)
+		motorClockNextTransitionMicros = micros() + (stepPulseHigh ? motorClockHighPulseUs : motorClockLowPulseUs);
+	motorClockRunning = true;
+	interrupts();
+#endif
 }
 
 bool timerIsRunning()
 {
 	noInterrupts();
+#if defined(ARDUINO_ARCH_AVR)
 	bool running = (TIMSK1 & (1 << OCIE1A)) != 0;
+#else
+	bool running = motorClockRunning;
+#endif
 	interrupts();
 	return running;
 }
@@ -2885,6 +3559,7 @@ bool timerCanRepresentStepRate(float stepRateHz)
 	if (stepRateHz <= 0.0)
 		return false;
 
+#if defined(ARDUINO_ARCH_AVR)
 	for (uint8_t prescalerIndex = 0; prescalerIndex < 5; prescalerIndex++)
 	{
 		uint16_t prescaler = timerPrescalerForIndex(prescalerIndex);
@@ -2906,6 +3581,14 @@ bool timerCanRepresentStepRate(float stepRateHz)
 	}
 
 	return false;
+#else
+	float totalPulseUsFloat = 1000000.0 / stepRateHz;
+	if (totalPulseUsFloat > 4294967295.0)
+		return false;
+
+	uint32_t totalPulseUs = (uint32_t)(totalPulseUsFloat + 0.5);
+	return totalPulseUs > STEP_PULSE_US + 1UL;
+#endif
 }
 
 bool configureTimer1(float stepRateHz)
@@ -2923,6 +3606,7 @@ bool configureTimer1Internal(float stepRateHz, bool preservePhase)
 	if (!timerCanRepresentStepRate(stepRateHz))
 		return false;
 
+#if defined(ARDUINO_ARCH_AVR)
 	bool preserveLowPhase = false;
 	uint16_t previousCounter = 0;
 	uint16_t previousCompare = 0;
@@ -2975,7 +3659,7 @@ bool configureTimer1Internal(float stepRateHz, bool preservePhase)
 			timer1LowPulseOcr = (uint16_t)lowTicks - 1;
 			OCR1A = timer1LowPulseOcr;
 			TCNT1 = initialCounter;
-			STEP_PORT &= ~STEP_MASK;
+			setStepPinLow();
 			TIFR1 |= (1 << OCF1A);
 			TIMSK1 &= ~(1 << OCIE1A);
 			TCCR1B = (1 << WGM12) | timerClockBitsForIndex(prescalerIndex);
@@ -2985,7 +3669,27 @@ bool configureTimer1Internal(float stepRateHz, bool preservePhase)
 	}
 
 	return false;
+#else
+	uint32_t totalPulseUs = (uint32_t)(1000000.0 / stepRateHz + 0.5);
+	if (totalPulseUs <= STEP_PULSE_US + 1UL)
+		return false;
+
+	noInterrupts();
+	motorClockHighPulseUs = STEP_PULSE_US;
+	motorClockLowPulseUs = totalPulseUs - STEP_PULSE_US;
+	if (!preservePhase || !motorClockRunning)
+	{
+		stepPulseHigh = false;
+		setStepPinLow();
+		motorClockNextTransitionMicros = micros() + motorClockLowPulseUs;
+		motorClockRunning = false;
+	}
+	interrupts();
+	return true;
+#endif
 }
+
+#if defined(ARDUINO_ARCH_AVR)
 
 uint16_t timerPrescalerForIndex(uint8_t index)
 {
@@ -3021,14 +3725,20 @@ uint8_t timerClockBitsForIndex(uint8_t index)
 	}
 }
 
+#endif
+
 void disableTimer1()
 {
 	noInterrupts();
+#if defined(ARDUINO_ARCH_AVR)
 	TIMSK1 &= ~(1 << OCIE1A);
 	TCCR1A = 0;
 	TCCR1B = 0;
+#else
+	motorClockRunning = false;
+#endif
 	stepPulseHigh = false;
-	STEP_PORT &= ~STEP_MASK;
+	setStepPinLow();
 	interrupts();
 }
 
@@ -3325,34 +4035,16 @@ bool settingsVersion6CrcMatches(const PersistedSettingsVersion6 *settings)
 
 uint8_t readEepromByte(uint16_t address)
 {
-	waitForEepromReady();
-
-	EEAR = address;
-	EECR |= (1 << EERE);
-	return EEDR;
+	return EEPROM.read(address);
 }
 
 void waitForEepromReady()
 {
-	while (EECR & (1 << EEPROM_WRITE_ENABLE_BIT))
-		serviceWatchdog();
 }
 
 void updateEepromByte(uint16_t address, uint8_t value)
 {
-	if (readEepromByte(address) == value)
-		return;
-
-	waitForEepromReady();
-
-	uint8_t savedStatus = SREG;
-	cli();
-	EEAR = address;
-	EEDR = value;
-	EECR |= (1 << EEPROM_MASTER_WRITE_ENABLE_BIT);
-	EECR |= (1 << EEPROM_WRITE_ENABLE_BIT);
-	SREG = savedStatus;
-	waitForEepromReady();
+	EEPROM.update(address, value);
 }
 
 void readPersistentSettings(PersistedSettings *settings)
@@ -3376,6 +4068,7 @@ void writePersistentSettings(const PersistedSettings *settings)
 		updateEepromByte(SETTINGS_EEPROM_ADDRESS + index, bytes[index]);
 }
 
+#if defined(ARDUINO_ARCH_AVR)
 ISR(TIMER1_COMPA_vect)
 {
 	if (motorClockStopOnAnyEndstop ? anyEndstopActive() : endstopActiveForDirection(motorClockDirectionForward))
@@ -3387,15 +4080,16 @@ ISR(TIMER1_COMPA_vect)
 
 	if (stepPulseHigh)
 	{
-		STEP_PORT &= ~STEP_MASK;
+		setStepPinLow();
 		stepPulseHigh = false;
 		stepCounter++;
 		OCR1A = timer1LowPulseOcr;
 	}
 	else
 	{
-		STEP_PORT |= STEP_MASK;
+		setStepPinHigh();
 		stepPulseHigh = true;
 		OCR1A = timer1HighPulseOcr;
 	}
 }
+#endif
