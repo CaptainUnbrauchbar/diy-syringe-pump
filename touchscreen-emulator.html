@@ -1,0 +1,1872 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIY Syringe Pump Touchscreen Emulator</title>
+<style>
+:root {
+  color-scheme: dark;
+  --page: #12151c;
+  --panel: #1b202b;
+  --panel-2: #242b38;
+  --line: #394250;
+  --text: #e9eef5;
+  --muted: #aab4c2;
+  --accent: #38d7ff;
+  --warn: #ffe45c;
+  --danger: #ff5b50;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--page);
+  color: var(--text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 340px;
+  gap: 18px;
+  padding: 18px;
+}
+.stage {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.device {
+  width: min(100%, 760px);
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+.bezel {
+  width: min(100%, 704px);
+  aspect-ratio: 16 / 11.4;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #2b313d, #10131a);
+  border: 1px solid #4b5565;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42), inset 0 0 0 8px #161b23;
+  display: grid;
+  place-items: center;
+  padding: 42px;
+}
+.tft-wrap {
+  width: min(100%, 640px);
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+}
+#tft {
+  position: relative;
+  width: 320px;
+  height: 240px;
+  transform: scale(var(--screen-scale, 1));
+  transform-origin: center;
+  background: #000;
+  overflow: hidden;
+  border: 1px solid #77818f;
+  box-shadow: 0 0 0 2px #050607, 0 0 32px rgba(56, 215, 255, 0.16);
+  image-rendering: pixelated;
+  touch-action: none;
+  user-select: none;
+}
+.pixel-text {
+  position: absolute;
+  font-family: "Consolas", "Lucida Console", monospace;
+  font-weight: 700;
+  line-height: 1;
+  white-space: pre;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+.rect, .control-zone { position: absolute; }
+.control-zone {
+  cursor: pointer;
+  touch-action: none;
+}
+.control-zone.active { filter: brightness(1.7); }
+.control-label {
+  position: absolute;
+  font-family: "Consolas", "Lucida Console", monospace;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  pointer-events: none;
+}
+kbd {
+  min-width: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 3px 7px;
+  border: 1px solid #647085;
+  border-bottom-color: #384253;
+  border-radius: 4px;
+  background: #242b38;
+  color: #f5f8fb;
+  font: 600 12px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 14px;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+.group {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+.group:first-of-type { border-top: 0; padding-top: 0; }
+.group h2 {
+  margin: 0;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.row strong { color: var(--text); font-weight: 650; }
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+.switch-row input { width: 18px; height: 18px; }
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+button.action {
+  min-height: 34px;
+  border: 1px solid #4c596d;
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 650;
+  cursor: pointer;
+}
+button.action:hover { border-color: var(--accent); }
+button.action.danger:hover { border-color: var(--danger); }
+.log {
+  min-height: 74px;
+  max-height: 150px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #343d4c;
+  border-radius: 6px;
+  background: #111620;
+  color: #c8d2df;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #4c596d;
+  background: #151a23;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.badge.ok { color: #80ffc2; border-color: #2d8f62; }
+.badge.warn { color: var(--warn); border-color: #a58b24; }
+.badge.bad { color: #ff9d98; border-color: #9f3933; }
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .panel { order: 2; }
+  .bezel { padding: 26px; }
+}
+</style>
+</head>
+<body>
+<main class="app">
+  <section class="stage">
+    <div class="device">
+      <div class="bezel">
+        <div class="tft-wrap">
+          <div id="tft" aria-label="Syringe pump TFT touchscreen" role="application"></div>
+        </div>
+      </div>
+      <div class="shortcuts">
+        <span><kbd>Left</kbd> <kbd>Up</kbd> <kbd>Enter</kbd> <kbd>Down</kbd> <kbd>Right</kbd></span>
+        <span>Touch only registers inside the bottom 54 px button bar, matching the sketch.</span>
+      </div>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <h1>Sketch Emulator</h1>
+
+    <section class="group">
+      <h2>Virtual Hardware</h2>
+      <label class="switch-row"><span>TMC2209 UART verified</span><input id="uartOk" type="checkbox" checked></label>
+      <label class="switch-row"><span>Forward endstop active</span><input id="forwardEndstop" type="checkbox"></label>
+      <label class="switch-row"><span>Backward endstop active</span><input id="backwardEndstop" type="checkbox"></label>
+      <div class="actions">
+        <button id="boot" class="action">Boot</button>
+        <button id="resetSettings" class="action danger">Reset EEPROM</button>
+      </div>
+    </section>
+
+    <section class="group">
+      <h2>Firmware State</h2>
+      <div class="row"><span>Screen</span><strong id="stateScreen">-</strong></div>
+      <div class="row"><span>Pump</span><span id="statePump" class="badge">-</span></div>
+      <div class="row"><span>UART</span><span id="stateUart" class="badge">-</span></div>
+      <div class="row"><span>Bolus</span><strong id="stateBolus">-</strong></div>
+      <div class="row"><span>Flow</span><strong id="stateFlow">-</strong></div>
+      <div class="row"><span>Pumped</span><strong id="statePumped">-</strong></div>
+      <div class="row"><span>Target</span><strong id="stateTarget">-</strong></div>
+      <div class="row"><span>Touch</span><strong id="stateTouch">-</strong></div>
+    </section>
+
+    <section class="group">
+      <h2>Settings Mirror</h2>
+      <div class="row"><span>Syringe</span><strong id="stateSyringe">-</strong></div>
+      <div class="row"><span>Delivery</span><strong id="stateDelivery">-</strong></div>
+      <div class="row"><span>Max bolus</span><strong id="stateMaxBolus">-</strong></div>
+      <div class="row"><span>Sound</span><strong id="stateSound">-</strong></div>
+      <div class="row"><span>Motor invert</span><strong id="stateInvert">-</strong></div>
+    </section>
+
+    <section class="group">
+      <h2>Input Log</h2>
+      <div id="log" class="log"></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const WIDTH = 320;
+  const HEIGHT = 240;
+  const TOUCH_BUTTON_BAR_HEIGHT = 54;
+  const STARTUP_SPLASH_MS = 1200;
+  const STATUS_DISPLAY_MS = 1200;
+  const DISPLAY_UPDATE_MS = 250;
+  const BOLUS_MENU_TIMEOUT_MS = 5000;
+  const BOLUS_DURATION_MS = 10000;
+
+  const DEFAULT_FLOW_ML_PER_HOUR = 50.00;
+  const MIN_FLOW_ML_PER_HOUR = 1.00;
+  const MAX_FLOW_ML_PER_HOUR = 600.00;
+  const DEFAULT_FLOW_CENTI_ML_PER_HOUR = 5000;
+  const MIN_FLOW_CENTI_ML_PER_HOUR = 100;
+  const MAX_FLOW_CENTI_ML_PER_HOUR = 60000;
+  const DEFAULT_DELIVERY_CENTI_ML_PER_CM = 357;
+  const MIN_DELIVERY_CENTI_ML_PER_CM = 1;
+  const MAX_DELIVERY_CENTI_ML_PER_CM = 99999;
+  const DEFAULT_SYRINGE_CENTI_ML = 5000;
+  const MIN_SYRINGE_CENTI_ML = 100;
+  const MAX_SYRINGE_CENTI_ML = 10000;
+  const MIN_BOLUS_CENTI_ML = 10;
+  const DEFAULT_BOLUS_ENABLED = true;
+  const DEFAULT_SOUND_ENABLED = true;
+  const DEFAULT_MAX_BOLUS_PERCENT = 10;
+  const MIN_MAX_BOLUS_PERCENT = 1;
+  const MAX_MAX_BOLUS_PERCENT = 50;
+  const DEFAULT_STARTUP_JOG_SPEED_PERCENT = 50;
+  const MIN_STARTUP_JOG_SPEED_PERCENT = 10;
+  const MAX_STARTUP_JOG_SPEED_PERCENT = 100;
+  const STARTUP_JOG_SPEED_STEP_PERCENT = 5;
+
+  const NOFMICROSTEPS = 32;
+  const NOFSTEPSPER360 = 200;
+  const MAXRPM = 120;
+  const MMPER360 = 8.0;
+  const F_CPU = 16000000;
+  const STEP_PULSE_US = 15;
+
+  const COLORS = {
+    black: "#000000",
+    white: "#ffffff",
+    red: "#f80000",
+    green: "#00e43c",
+    cyan: "#00f0ff",
+    yellow: "#fff000",
+    darkgrey: "#7b7d7b",
+    navy: "#000078"
+  };
+
+  const Button = {
+    RIGHT: "BUTTON_RIGHT",
+    UP: "BUTTON_UP",
+    DOWN: "BUTTON_DOWN",
+    LEFT: "BUTTON_LEFT",
+    SELECT: "BUTTON_SELECT",
+    NONE: "BUTTON_NONE"
+  };
+
+  const Screen = {
+    STARTUP_SPLASH: "SCREEN_STARTUP_SPLASH",
+    STARTUP_INFO: "SCREEN_STARTUP_INFO",
+    MAIN_MENU: "SCREEN_MAIN_MENU",
+    PUMP_RUNNING: "SCREEN_PUMP_RUNNING",
+    START_MENU: "SCREEN_START_MENU",
+    SETTINGS_MENU: "SCREEN_SETTINGS_MENU",
+    EDIT_RATE: "SCREEN_EDIT_RATE",
+    EDIT_VOLUME: "SCREEN_EDIT_VOLUME",
+    EDIT_TIME: "SCREEN_EDIT_TIME",
+    EDIT_DELIVERY: "SCREEN_EDIT_DELIVERY",
+    EDIT_SYRINGE: "SCREEN_EDIT_SYRINGE",
+    EDIT_MAX_BOLUS: "SCREEN_EDIT_MAX_BOLUS",
+    EDIT_STARTUP_MOTOR_SPEED: "SCREEN_EDIT_STARTUP_MOTOR_SPEED",
+    SETTINGS_SUPPORT: "SCREEN_SETTINGS_SUPPORT",
+    SUPPORT_INFO: "SCREEN_SUPPORT_INFO",
+    EDIT_BOLUS: "SCREEN_EDIT_BOLUS",
+    CONFIRM_BOLUS: "SCREEN_CONFIRM_BOLUS",
+    CONFIRM_INFUSION: "SCREEN_CONFIRM_INFUSION"
+  };
+
+  const MAIN_MENU_START_INFUSION = 0;
+  const MAIN_MENU_LOAD_SYRINGE = 1;
+  const MAIN_MENU_SETTINGS = 2;
+  const MAIN_MENU_COUNT = 3;
+  const START_MENU_VOLUME_TIME = 0;
+  const START_MENU_RATE = 1;
+  const START_MENU_COUNT = 2;
+  const SETTINGS_MENU_COUNT = 9;
+  const SETTINGS_MENU_DELIVERY = 0;
+  const SETTINGS_MENU_SYRINGE = 1;
+  const SETTINGS_MENU_BOLUS = 2;
+  const SETTINGS_MENU_SOUND = 3;
+  const SETTINGS_MENU_MAX_BOLUS = 4;
+  const SETTINGS_MENU_MOTOR_INVERT = 5;
+  const SETTINGS_MENU_STARTUP_SPEED = 6;
+  const SETTINGS_MENU_MOTOR_TEST = 7;
+  const SETTINGS_MENU_SUPPORT = 8;
+
+  const labels = new Map([
+    [Screen.STARTUP_SPLASH, "Startup splash"],
+    [Screen.STARTUP_INFO, "Startup info"],
+    [Screen.MAIN_MENU, "Main menu"],
+    [Screen.PUMP_RUNNING, "Pump running"],
+    [Screen.START_MENU, "Start menu"],
+    [Screen.SETTINGS_MENU, "Settings"],
+    [Screen.EDIT_RATE, "Rate editor"],
+    [Screen.EDIT_VOLUME, "Volume editor"],
+    [Screen.EDIT_TIME, "Time editor"],
+    [Screen.EDIT_DELIVERY, "Delivery editor"],
+    [Screen.EDIT_SYRINGE, "Syringe editor"],
+    [Screen.EDIT_MAX_BOLUS, "Max bolus editor"],
+    [Screen.EDIT_STARTUP_MOTOR_SPEED, "Motor speed editor"],
+    [Screen.SETTINGS_SUPPORT, "Motor test"],
+    [Screen.SUPPORT_INFO, "Support"],
+    [Screen.EDIT_BOLUS, "Bolus editor"],
+    [Screen.CONFIRM_BOLUS, "Bolus confirm"],
+    [Screen.CONFIRM_INFUSION, "Infusion confirm"]
+  ]);
+
+  const tft = document.getElementById("tft");
+  const logNode = document.getElementById("log");
+  const ui = {
+    uartOk: document.getElementById("uartOk"),
+    forwardEndstop: document.getElementById("forwardEndstop"),
+    backwardEndstop: document.getElementById("backwardEndstop"),
+    boot: document.getElementById("boot"),
+    resetSettings: document.getElementById("resetSettings"),
+    stateScreen: document.getElementById("stateScreen"),
+    statePump: document.getElementById("statePump"),
+    stateUart: document.getElementById("stateUart"),
+    stateBolus: document.getElementById("stateBolus"),
+    stateFlow: document.getElementById("stateFlow"),
+    statePumped: document.getElementById("statePumped"),
+    stateTarget: document.getElementById("stateTarget"),
+    stateTouch: document.getElementById("stateTouch"),
+    stateSyringe: document.getElementById("stateSyringe"),
+    stateDelivery: document.getElementById("stateDelivery"),
+    stateMaxBolus: document.getElementById("stateMaxBolus"),
+    stateSound: document.getElementById("stateSound"),
+    stateInvert: document.getElementById("stateInvert")
+  };
+
+  const state = createDefaultState();
+  let lastTick = performance.now();
+  let lastTouchLabel = "-";
+  let flashTimer = 0;
+
+  function createDefaultState() {
+    return {
+      now: 0,
+      flowMlPerHour: DEFAULT_FLOW_ML_PER_HOUR,
+      baseInfusionFlowMlPerHour: DEFAULT_FLOW_ML_PER_HOUR,
+      targetVolumeMl: 50.00,
+      targetTimeSeconds: 0,
+      targetVolumeEnabled: false,
+      deliveryMlPerCm: DEFAULT_DELIVERY_CENTI_ML_PER_CM / 100,
+      syringeCentiMl: DEFAULT_SYRINGE_CENTI_ML,
+      bolusEnabled: DEFAULT_BOLUS_ENABLED,
+      soundEnabled: DEFAULT_SOUND_ENABLED,
+      motorDirectionInverted: true,
+      maxBolusPercent: DEFAULT_MAX_BOLUS_PERCENT,
+      startupJogSpeedPercent: DEFAULT_STARTUP_JOG_SPEED_PERCENT,
+      bolusActive: false,
+      bolusStartMillis: 0,
+      bolusDurationMillis: BOLUS_DURATION_MS,
+      pendingBolusDurationMillis: BOLUS_DURATION_MS,
+      pendingBolusFlowMlPerHour: 0,
+      lastBolusInputMillis: 0,
+      editBolusCentiMl: 100,
+      pumpRunning: false,
+      pendingInfusionTargetVolumeEnabled: false,
+      pumpStartMillis: 0,
+      lastDisplayMillis: 0,
+      startupScreenStartMillis: 0,
+      startupInfoFromMainMenu: false,
+      currentScreen: Screen.STARTUP_SPLASH,
+      mainMenuIndex: 0,
+      startMenuIndex: 0,
+      settingsMenuIndex: 0,
+      editRateCentiMlPerHour: DEFAULT_FLOW_CENTI_ML_PER_HOUR,
+      editVolumeCentiMl: 5000,
+      editTimeSeconds: 0,
+      editDeliveryCentiMlPerCm: DEFAULT_DELIVERY_CENTI_ML_PER_CM,
+      editSyringeCentiMl: DEFAULT_SYRINGE_CENTI_ML,
+      editMaxBolusPercent: DEFAULT_MAX_BOLUS_PERCENT,
+      editStartupJogSpeedPercent: DEFAULT_STARTUP_JOG_SPEED_PERCENT,
+      editCursorIndex: 0,
+      settingsSupportStartMillis: 0,
+      motorTestRunning: false,
+      motorTestDirectionForward: true,
+      startupJogRunning: false,
+      startupJogDirectionForward: true,
+      tmc2209UartVerified: true,
+      statusActive: false,
+      alarmActive: false,
+      statusRequiresAcknowledge: false,
+      statusUntilMillis: 0,
+      statusReturnScreen: Screen.MAIN_MENU,
+      pumpedMl: 0,
+      lastPumpMillis: 0,
+      settingsResetToDefaults: false
+    };
+  }
+
+  function px(value) { return `${value}px`; }
+
+  function addNode(className, style, textContent) {
+    const node = document.createElement("div");
+    if (className) node.className = className;
+    Object.assign(node.style, style);
+    if (textContent !== undefined) node.textContent = textContent;
+    tft.appendChild(node);
+    return node;
+  }
+
+  function clearScreen(background = COLORS.black) {
+    tft.innerHTML = "";
+    tft.style.background = background;
+  }
+
+  function rect(x, y, width, height, color, borderColor) {
+    const style = {
+      left: px(x), top: px(y), width: px(width), height: px(height),
+      background: color
+    };
+    if (borderColor) style.border = `1px solid ${borderColor}`;
+    return addNode("rect", style);
+  }
+
+  function text(x, y, size, color, value, background = "transparent") {
+    return addNode("pixel-text", {
+      left: px(x), top: px(y),
+      fontSize: px(size * 8),
+      color,
+      background
+    }, value);
+  }
+
+  function beginScreen(title) {
+    clearScreen();
+    rect(0, 0, WIDTH, 28, COLORS.navy);
+    text(8, 7, 2, COLORS.white, title, COLORS.navy);
+    drawControls();
+  }
+
+  function drawControls() {
+    const labels = ["<", "UP", "OK", "DN", ">"];
+    const buttons = [Button.LEFT, Button.UP, Button.SELECT, Button.DOWN, Button.RIGHT];
+    const colors = [COLORS.navy, COLORS.navy, COLORS.green, COLORS.navy, COLORS.navy];
+    const top = HEIGHT - TOUCH_BUTTON_BAR_HEIGHT;
+    const buttonWidth = WIDTH / 5;
+    for (let index = 0; index < 5; index++) {
+      const left = index * buttonWidth;
+      const width = index === 4 ? WIDTH - left : buttonWidth;
+      const zone = rect(left, top, width, TOUCH_BUTTON_BAR_HEIGHT, colors[index], COLORS.white);
+      zone.classList.add("control-zone");
+      zone.dataset.button = buttons[index];
+      const label = labels[index];
+      const labelWidth = label.length * 12;
+      addNode("control-label", {
+        left: px(left + width / 2 - labelWidth / 2),
+        top: px(top + 18),
+        fontSize: px(16),
+        color: COLORS.white
+      }, label);
+    }
+  }
+
+  function beginMenuItem(row, selected) {
+    const y = 38 + row * 34;
+    const background = selected ? COLORS.darkgrey : COLORS.black;
+    rect(8, y, WIDTH - 16, 30, background, selected ? COLORS.yellow : COLORS.darkgrey);
+    const item = text(16, y + 8, 2, selected ? COLORS.yellow : COLORS.white, "", background);
+    return item;
+  }
+
+  function drawMenuItem(row, selected, label) {
+    beginMenuItem(row, selected).textContent = label;
+  }
+
+  function drawValueScreen(title, value, cursorColumn, cursorVisible) {
+    beginScreen(title);
+    text(18, 78, 3, COLORS.white, value);
+    text(18, 138, 1, COLORS.cyan, "< > Stelle   UP/DN Wert   OK");
+    if (cursorVisible) {
+      rect(18 + cursorColumn * 18, 106, 16, 3, COLORS.yellow);
+    }
+  }
+
+  function showSplash() {
+    beginScreen("DIY Syringe Pump");
+    text(24, 68, 3, COLORS.white, "DIY Syringe Pump");
+    text(60, 120, 2, COLORS.cyan, "A Flo Project");
+  }
+
+  function showInfoScreen() {
+    state.currentScreen = Screen.STARTUP_INFO;
+    const whole = Math.floor(state.syringeCentiMl / 100);
+    const fraction = state.syringeCentiMl % 100;
+    const syringeLine = whole >= 100
+      ? `Aktuell${pad(whole, 3)}.${pad(fraction, 2)} ml`
+      : `Aktuell ${pad(whole, 2)}.${pad(fraction, 2)} ml`;
+    beginScreen("Insert Syringe");
+    text(30, 74, 3, COLORS.white, syringeLine);
+    text(20, 130, 1, COLORS.cyan, "OK weiter   UP/DN Motor jog");
+  }
+
+  function showCurrentScreen() {
+    switch (state.currentScreen) {
+      case Screen.MAIN_MENU: showMainMenu(); break;
+      case Screen.START_MENU: showStartMenu(); break;
+      case Screen.PUMP_RUNNING: showPumpScreen(); break;
+      case Screen.STARTUP_SPLASH: showSplash(); break;
+      case Screen.STARTUP_INFO: showInfoScreen(); break;
+      case Screen.EDIT_RATE: showRateEditor(); break;
+      case Screen.EDIT_VOLUME: showVolumeEditor(); break;
+      case Screen.EDIT_TIME: showTimeEditor(); break;
+      case Screen.EDIT_DELIVERY: showDeliveryEditor(); break;
+      case Screen.EDIT_SYRINGE: showSyringeEditor(); break;
+      case Screen.EDIT_MAX_BOLUS: showMaxBolusEditor(); break;
+      case Screen.EDIT_STARTUP_MOTOR_SPEED: showStartupMotorSpeedEditor(); break;
+      case Screen.SETTINGS_SUPPORT: showSettingsSupportScreen(); break;
+      case Screen.SUPPORT_INFO: showSupportInfoScreen(); break;
+      case Screen.EDIT_BOLUS: showBolusEditor(); break;
+      case Screen.CONFIRM_BOLUS: showBolusConfirm(); break;
+      case Screen.CONFIRM_INFUSION: showInfusionConfirm(); break;
+      default: showSettingsMenu(); break;
+    }
+  }
+
+  function showMainMenu() {
+    beginScreen("Main Menu");
+    drawMenuItem(0, state.mainMenuIndex === MAIN_MENU_START_INFUSION, "Start Infusion");
+    drawMenuItem(1, state.mainMenuIndex === MAIN_MENU_LOAD_SYRINGE, "Neu einlegen");
+    drawMenuItem(2, state.mainMenuIndex === MAIN_MENU_SETTINGS, "Einstellungen");
+  }
+
+  function showStartMenu() {
+    beginScreen("Start Infusion");
+    drawMenuItem(0, state.startMenuIndex === START_MENU_VOLUME_TIME, "Volumen & Zeit");
+    drawMenuItem(1, state.startMenuIndex === START_MENU_RATE, "Infusionsrate");
+  }
+
+  function showSettingsMenu() {
+    beginScreen("Einstellungen");
+    let firstIndex = 0;
+    if (state.settingsMenuIndex > 1) firstIndex = state.settingsMenuIndex - 1;
+    if (firstIndex > SETTINGS_MENU_COUNT - 4) firstIndex = SETTINGS_MENU_COUNT - 4;
+    for (let row = 0; row < 4; row++) {
+      printSettingsMenuItem(firstIndex + row, state.settingsMenuIndex === firstIndex + row);
+    }
+  }
+
+  function printSettingsMenuItem(itemIndex, selected) {
+    let row = itemIndex;
+    if (state.settingsMenuIndex > 1) row = itemIndex - state.settingsMenuIndex + 1;
+    if (state.settingsMenuIndex > SETTINGS_MENU_COUNT - 3) row = itemIndex - (SETTINGS_MENU_COUNT - 4);
+    const node = beginMenuItem(row, selected);
+    switch (itemIndex) {
+      case SETTINGS_MENU_DELIVERY: node.textContent = "Abgabemenge"; break;
+      case SETTINGS_MENU_SYRINGE: node.textContent = "Spritze ml"; break;
+      case SETTINGS_MENU_BOLUS: node.textContent = state.bolusEnabled ? "Bolus: AN" : "Bolus: AUS"; break;
+      case SETTINGS_MENU_SOUND: node.textContent = state.soundEnabled ? "Ton: EIN" : "Ton: AUS"; break;
+      case SETTINGS_MENU_MAX_BOLUS: node.textContent = "Max Bolus %"; break;
+      case SETTINGS_MENU_MOTOR_INVERT: node.textContent = state.motorDirectionInverted ? "Motor inv: AN" : "Motor inv: AUS"; break;
+      case SETTINGS_MENU_STARTUP_SPEED: node.textContent = `Motorspeed:${pad(state.startupJogSpeedPercent, 3)}%`; break;
+      case SETTINGS_MENU_MOTOR_TEST: node.textContent = "Motortest"; break;
+      case SETTINGS_MENU_SUPPORT: node.textContent = "Support"; break;
+      default: node.textContent = "?"; break;
+    }
+  }
+
+  function beginRateEditor() {
+    let centiRate = Math.floor(state.flowMlPerHour * 100 + 0.5);
+    centiRate = clamp(centiRate, MIN_FLOW_CENTI_ML_PER_HOUR, MAX_FLOW_CENTI_ML_PER_HOUR);
+    state.editRateCentiMlPerHour = centiRate;
+    state.editCursorIndex = 0;
+    state.currentScreen = Screen.EDIT_RATE;
+    showRateEditor();
+  }
+
+  function beginStartupInfoFromMainMenu() {
+    showInfoScreen();
+    state.startupInfoFromMainMenu = true;
+  }
+
+  function beginVolumeEditor() {
+    let centiVolume = Math.floor(state.targetVolumeMl * 100 + 0.5);
+    centiVolume = clamp(centiVolume, 1, maxVolumeCentiMl());
+    state.editVolumeCentiMl = centiVolume;
+    state.editCursorIndex = 0;
+    state.currentScreen = Screen.EDIT_VOLUME;
+    showVolumeEditor();
+  }
+
+  function beginTimeEditor() {
+    state.editTimeSeconds = state.targetTimeSeconds;
+    state.editCursorIndex = 0;
+    state.currentScreen = Screen.EDIT_TIME;
+    showTimeEditor();
+  }
+
+  function beginDeliveryEditor() {
+    let centiDelivery = Math.floor(state.deliveryMlPerCm * 100 + 0.5);
+    centiDelivery = clamp(centiDelivery, MIN_DELIVERY_CENTI_ML_PER_CM, MAX_DELIVERY_CENTI_ML_PER_CM);
+    state.editDeliveryCentiMlPerCm = centiDelivery;
+    state.editCursorIndex = 0;
+    state.currentScreen = Screen.EDIT_DELIVERY;
+    showDeliveryEditor();
+  }
+
+  function beginSyringeEditor() {
+    state.editSyringeCentiMl = validSyringeCenti(state.syringeCentiMl) ? state.syringeCentiMl : DEFAULT_SYRINGE_CENTI_ML;
+    state.editCursorIndex = 0;
+    state.currentScreen = Screen.EDIT_SYRINGE;
+    showSyringeEditor();
+  }
+
+  function beginMaxBolusEditor() {
+    state.editMaxBolusPercent = validMaxBolusPercent(state.maxBolusPercent) ? state.maxBolusPercent : DEFAULT_MAX_BOLUS_PERCENT;
+    state.currentScreen = Screen.EDIT_MAX_BOLUS;
+    showMaxBolusEditor();
+  }
+
+  function beginStartupMotorSpeedEditor() {
+    state.editStartupJogSpeedPercent = validStartupJogSpeedPercent(state.startupJogSpeedPercent)
+      ? state.startupJogSpeedPercent
+      : DEFAULT_STARTUP_JOG_SPEED_PERCENT;
+    state.currentScreen = Screen.EDIT_STARTUP_MOTOR_SPEED;
+    showStartupMotorSpeedEditor();
+  }
+
+  function beginSettingsSupportScreen() {
+    state.settingsSupportStartMillis = state.now;
+    state.motorTestDirectionForward = true;
+    state.currentScreen = Screen.SETTINGS_SUPPORT;
+    showSettingsSupportScreen();
+  }
+
+  function beginSupportInfoScreen() {
+    state.currentScreen = Screen.SUPPORT_INFO;
+    showSupportInfoScreen();
+  }
+
+  function beginBolusEditor() {
+    if (!state.bolusEnabled) {
+      showStatus("Bolus AUS", "Einstellung");
+      return;
+    }
+    if (state.editBolusCentiMl < MIN_BOLUS_CENTI_ML || state.editBolusCentiMl > maxBolusCentiMl()) {
+      state.editBolusCentiMl = 100;
+    }
+    state.editBolusCentiMl = clamp(state.editBolusCentiMl, MIN_BOLUS_CENTI_ML, maxBolusCentiMl());
+    state.editCursorIndex = 0;
+    state.lastBolusInputMillis = state.now;
+    state.currentScreen = Screen.EDIT_BOLUS;
+    showBolusEditor();
+  }
+
+  function beginInfusionConfirm(volumeTargetEnabled) {
+    state.pendingInfusionTargetVolumeEnabled = volumeTargetEnabled;
+    state.currentScreen = Screen.CONFIRM_INFUSION;
+    showInfusionConfirm();
+  }
+
+  function showRateEditor() {
+    const whole = Math.floor(state.editRateCentiMlPerHour / 100);
+    const fraction = state.editRateCentiMlPerHour % 100;
+    drawValueScreen("Enter Infusion Rate ml/h", `${pad(whole, 3)}.${pad(fraction, 2)} ml/h`, editCursorColumn(), true);
+  }
+
+  function showVolumeEditor() {
+    const whole = Math.floor(state.editVolumeCentiMl / 100);
+    const fraction = state.editVolumeCentiMl % 100;
+    drawValueScreen("Target Volume", `${pad(whole, 3)}.${pad(fraction, 2)} ml`, editCursorColumn(), true);
+  }
+
+  function showTimeEditor() {
+    const hours = Math.floor(state.editTimeSeconds / 3600);
+    const minutes = Math.floor((state.editTimeSeconds % 3600) / 60);
+    const seconds = state.editTimeSeconds % 60;
+    drawValueScreen("Target Time", `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(seconds, 2)} H/M/S`, editCursorColumn(), true);
+  }
+
+  function showDeliveryEditor() {
+    const whole = Math.floor(state.editDeliveryCentiMlPerCm / 100);
+    const fraction = state.editDeliveryCentiMlPerCm % 100;
+    drawValueScreen("Fluid Amount ml/cm", `${pad(whole, 3)}.${pad(fraction, 2)} ml/cm`, editCursorColumn(), true);
+  }
+
+  function showSyringeEditor() {
+    const whole = Math.floor(state.editSyringeCentiMl / 100);
+    const fraction = state.editSyringeCentiMl % 100;
+    drawValueScreen("Syringe ml", `${pad(whole, 3)}.${pad(fraction, 2)} ml`, editCursorColumn(), true);
+  }
+
+  function showMaxBolusEditor() {
+    beginScreen("Max Bolus");
+    text(38, 78, 3, COLORS.white, `${pad(state.editMaxBolusPercent, 2)} % Spritze`);
+    text(34, 138, 1, COLORS.cyan, "UP/DN anpassen   OK speichern");
+  }
+
+  function showStartupMotorSpeedEditor() {
+    beginScreen("Motorspeed");
+    text(88, 78, 3, COLORS.white, `${pad(state.editStartupJogSpeedPercent, 3)} %`);
+    text(34, 138, 1, COLORS.cyan, "UP/DN anpassen   OK speichern");
+  }
+
+  function showSettingsSupportScreen() {
+    beginScreen("Motortest");
+    const line = `Test ${state.motorTestDirectionForward ? "VOR" : "ZUR"} ${state.motorTestRunning ? "AN" : "AUS"}`;
+    text(36, 72, 3, COLORS.white, line);
+    text(18, 128, 1, COLORS.cyan, "OK Start/Stop   UP Vor   DN Zur   < Zurueck");
+  }
+
+  function showSupportInfoScreen() {
+    beginScreen("Support");
+    text(40, 72, 3, COLORS.white, "You can solve");
+    text(40, 112, 3, COLORS.cyan, "it yourself! :)");
+  }
+
+  function showBolusEditor() {
+    const whole = Math.floor(state.editBolusCentiMl / 100);
+    const fraction = state.editBolusCentiMl % 100;
+    drawValueScreen("Manueller Bolus", `Bolus ml: ${pad(whole, 2)}.${pad(fraction, 2)}`, editCursorColumn(), true);
+    state.lastDisplayMillis = state.now;
+  }
+
+  function showBolusConfirm() {
+    beginScreen("Bolus");
+    text(34, 66, 3, COLORS.white, `BOL ${dtostrf(state.pendingBolusFlowMlPerHour, 6, 1)} ml/h`);
+    const seconds = Math.floor((state.pendingBolusDurationMillis + 999) / 1000);
+    text(58, 112, 3, COLORS.cyan, `Zeit ${String(seconds).padStart(4, " ")}s`);
+    text(36, 154, 1, COLORS.yellow, "OK starten   < abbrechen");
+    state.lastDisplayMillis = state.now;
+  }
+
+  function showInfusionConfirm() {
+    const syringeWholeMl = Math.floor(state.syringeCentiMl / 100);
+    const centiFlow = Math.floor(state.flowMlPerHour * 100 + 0.5);
+    const rateText = `${Math.floor(centiFlow / 100)}.${pad(centiFlow % 100, 2)}`;
+    let detail;
+    if (state.pendingInfusionTargetVolumeEnabled) {
+      const durationMinutes = Math.floor((state.targetTimeSeconds + 30) / 60);
+      detail = `Spritze: ${syringeWholeMl}ml, Rate: ${rateText} ml/h, Dauer: ${durationMinutes}min`;
+    } else {
+      detail = `Spritze: ${syringeWholeMl}ml, Rate: ${rateText} ml/h, Bis Ende`;
+    }
+    beginScreen("Abgabe starten?");
+    text(12, 62, 1, COLORS.white, detail);
+    text(38, 132, 1, COLORS.yellow, "OK starten   < abbrechen");
+    state.lastDisplayMillis = state.now;
+  }
+
+  function showPumpScreen() {
+    state.lastDisplayMillis = state.now;
+    const centiFlow = Math.floor(state.flowMlPerHour * 100 + 0.5);
+    const flowText = `${pad(Math.floor(centiFlow / 100), 3)}.${pad(centiFlow % 100, 2)}`;
+    const elapsedSeconds = Math.floor((state.now - state.pumpStartMillis) / 1000);
+    let lineText;
+    if (state.targetVolumeEnabled) {
+      const remainingMl = Math.max(0, state.targetVolumeMl - state.pumpedMl);
+      const remainingSeconds = state.flowMlPerHour > 0 ? Math.floor((remainingMl * 3600 / state.flowMlPerHour) + 0.5) : 0;
+      lineText = `Rest ${dtostrf(remainingMl, 1, 2)} ml ${formatElapsedTime(remainingSeconds)}`;
+    } else {
+      const pumpedCentiMl = state.pumpedMl <= 0 ? 0 : Math.floor(state.pumpedMl * 100 + 0.5);
+      const pumpedWholeMl = Math.floor(pumpedCentiMl / 100);
+      const pumpedFractionMl = pumpedCentiMl % 100;
+      const volumeText = pumpedWholeMl < 100
+        ? `${pad(pumpedWholeMl, 2)}.${pad(pumpedFractionMl, 2)}`
+        : `${pad(pumpedWholeMl, 3)}.${pad(pumpedFractionMl, 2)}`;
+      lineText = `${formatElapsedTime(elapsedSeconds)}  ${volumeText} ml`;
+    }
+    beginScreen("Infusion laeuft");
+    text(16, 52, 2, COLORS.cyan, "Rate ml/h");
+    text(16, 78, 4, COLORS.white, flowText);
+    text(16, 124, 2, COLORS.yellow, lineText);
+    text(16, 154, 1, COLORS.cyan, "< Stop   OK Bolus");
+  }
+
+  function showStatus(line1, line2) {
+    const nextStatusUntil = state.now + STATUS_DISPLAY_MS;
+    state.alarmActive = false;
+    state.statusReturnScreen = state.currentScreen;
+    state.statusActive = true;
+    state.statusRequiresAcknowledge = false;
+    state.statusUntilMillis = nextStatusUntil;
+    beginScreen("Status");
+    text(20, 70, 3, COLORS.white, line1);
+    text(20, 116, 2, COLORS.cyan, line2);
+    state.lastDisplayMillis = state.now;
+  }
+
+  function showAcknowledgedStatus(line1, line2) {
+    state.alarmActive = false;
+    state.statusReturnScreen = state.currentScreen;
+    state.statusActive = true;
+    state.statusRequiresAcknowledge = true;
+    state.statusUntilMillis = 0;
+    beginScreen("Meldung");
+    text(20, 70, 3, COLORS.white, line1);
+    text(20, 116, 2, COLORS.cyan, line2);
+    text(28, 154, 1, COLORS.yellow, "OK bestaetigen");
+    state.lastDisplayMillis = state.now;
+  }
+
+  function showAlarm(line1, line2) {
+    state.alarmActive = false;
+    state.statusActive = true;
+    state.statusRequiresAcknowledge = true;
+    state.statusReturnScreen = Screen.MAIN_MENU;
+    beginScreen("ALARM");
+    rect(0, 28, WIDTH, 154, COLORS.red);
+    text(20, 70, 3, COLORS.white, line1, COLORS.red);
+    text(20, 116, 2, COLORS.white, line2, COLORS.red);
+    text(28, 154, 1, COLORS.white, "OK bestaetigen", COLORS.red);
+    state.lastDisplayMillis = state.now;
+    state.alarmActive = true;
+  }
+
+  function clearAlarm() {
+    state.alarmActive = false;
+    state.statusActive = false;
+    state.statusRequiresAcknowledge = false;
+    state.currentScreen = Screen.MAIN_MENU;
+    showMainMenu();
+  }
+
+  function acknowledgeStatus() {
+    if (!state.statusActive || state.alarmActive) return;
+    state.statusActive = false;
+    state.statusRequiresAcknowledge = false;
+    state.currentScreen = state.statusReturnScreen;
+    showCurrentScreen();
+  }
+
+  function updateStatusScreen() {
+    if (state.alarmActive || state.statusRequiresAcknowledge) return;
+    if (!state.statusActive || state.now < state.statusUntilMillis) return;
+    state.statusActive = false;
+    state.statusRequiresAcknowledge = false;
+    state.currentScreen = state.statusReturnScreen;
+    showCurrentScreen();
+  }
+
+  function updateStartupScreens(button) {
+    if (state.currentScreen === Screen.STARTUP_SPLASH) {
+      if (button === Button.SELECT || state.now - state.startupScreenStartMillis >= STARTUP_SPLASH_MS) {
+        showInfoScreen();
+      }
+      return;
+    }
+
+    if (state.currentScreen === Screen.STARTUP_INFO && button === Button.SELECT) {
+      stopStartupMotorJog();
+      if (state.startupInfoFromMainMenu) {
+        state.startupInfoFromMainMenu = false;
+        state.currentScreen = Screen.MAIN_MENU;
+        showMainMenu();
+        return;
+      }
+      finishStartupInfo();
+      return;
+    }
+
+    if (state.currentScreen === Screen.STARTUP_INFO) {
+      updateStartupMotorJog(button);
+    }
+  }
+
+  function finishStartupInfo() {
+    state.currentScreen = Screen.MAIN_MENU;
+    showMainMenu();
+    if (!state.tmc2209UartVerified) {
+      showAcknowledgedStatus("TMC2209 Fehler", "UART/MS pruefen");
+    } else if (state.settingsResetToDefaults) {
+      showStatus("Settings reset", "Defaults aktiv");
+    }
+  }
+
+  function handleUiButton(button) {
+    if (button === Button.NONE) {
+      return;
+    }
+
+    if (state.currentScreen === Screen.SETTINGS_SUPPORT) {
+      if (button === Button.LEFT) {
+        stopMotorSelfTest();
+        state.currentScreen = Screen.MAIN_MENU;
+        showMainMenu();
+      } else if (button === Button.SELECT) {
+        if (state.motorTestRunning) stopMotorSelfTest();
+        else startMotorSelfTest();
+        showSettingsSupportScreen();
+      } else if (button === Button.UP || button === Button.DOWN) {
+        const nextDirectionForward = button === Button.UP;
+        if (state.motorTestDirectionForward !== nextDirectionForward) {
+          state.motorTestDirectionForward = nextDirectionForward;
+          if (state.motorTestRunning) {
+            stopMotorSelfTest();
+            startMotorSelfTest();
+          }
+          showSettingsSupportScreen();
+        }
+      }
+      return;
+    }
+
+    if (state.currentScreen === Screen.SUPPORT_INFO) {
+      if (button === Button.LEFT || button === Button.RIGHT || button === Button.SELECT) {
+        state.currentScreen = Screen.SETTINGS_MENU;
+        showSettingsMenu();
+      }
+      return;
+    }
+
+    if (state.currentScreen === Screen.EDIT_RATE) return handleRateEditorButton(button);
+    if (state.currentScreen === Screen.EDIT_VOLUME) return handleVolumeEditorButton(button);
+    if (state.currentScreen === Screen.EDIT_TIME) return handleTimeEditorButton(button);
+    if (state.currentScreen === Screen.EDIT_DELIVERY) return handleDeliveryEditorButton(button);
+    if (state.currentScreen === Screen.EDIT_SYRINGE) return handleSyringeEditorButton(button);
+    if (state.currentScreen === Screen.EDIT_MAX_BOLUS) return handleMaxBolusEditorButton(button);
+    if (state.currentScreen === Screen.EDIT_STARTUP_MOTOR_SPEED) return handleStartupMotorSpeedEditorButton(button);
+    if (state.currentScreen === Screen.CONFIRM_BOLUS) return handleBolusConfirmButton(button);
+    if (state.currentScreen === Screen.CONFIRM_INFUSION) return handleInfusionConfirmButton(button);
+
+    if (state.currentScreen === Screen.MAIN_MENU) {
+      if (button === Button.UP || button === Button.DOWN) {
+        if (button === Button.UP) state.mainMenuIndex = state.mainMenuIndex === 0 ? MAIN_MENU_COUNT - 1 : state.mainMenuIndex - 1;
+        else state.mainMenuIndex = state.mainMenuIndex >= MAIN_MENU_COUNT - 1 ? 0 : state.mainMenuIndex + 1;
+        showMainMenu();
+      } else if (button === Button.RIGHT || button === Button.SELECT) {
+        if (state.mainMenuIndex === MAIN_MENU_START_INFUSION) {
+          state.currentScreen = Screen.START_MENU;
+          showStartMenu();
+        } else if (state.mainMenuIndex === MAIN_MENU_LOAD_SYRINGE) {
+          beginStartupInfoFromMainMenu();
+        } else if (state.mainMenuIndex === MAIN_MENU_SETTINGS) {
+          state.currentScreen = Screen.SETTINGS_MENU;
+          state.settingsMenuIndex = 0;
+          showSettingsMenu();
+        }
+      }
+      return;
+    }
+
+    if (state.currentScreen === Screen.START_MENU) {
+      if (button === Button.UP || button === Button.DOWN) {
+        if (button === Button.UP) state.startMenuIndex = state.startMenuIndex === 0 ? START_MENU_COUNT - 1 : state.startMenuIndex - 1;
+        else state.startMenuIndex = state.startMenuIndex >= START_MENU_COUNT - 1 ? 0 : state.startMenuIndex + 1;
+        showStartMenu();
+      } else if (button === Button.LEFT) {
+        state.currentScreen = Screen.MAIN_MENU;
+        showMainMenu();
+      } else if (button === Button.RIGHT || button === Button.SELECT) {
+        if (state.startMenuIndex === START_MENU_VOLUME_TIME) beginVolumeEditor();
+        else if (state.startMenuIndex === START_MENU_RATE) beginRateEditor();
+      }
+      return;
+    }
+
+    if (state.currentScreen === Screen.SETTINGS_MENU) {
+      if (button === Button.UP || button === Button.DOWN) {
+        if (button === Button.UP) state.settingsMenuIndex = state.settingsMenuIndex === 0 ? SETTINGS_MENU_COUNT - 1 : state.settingsMenuIndex - 1;
+        else state.settingsMenuIndex = state.settingsMenuIndex >= SETTINGS_MENU_COUNT - 1 ? 0 : state.settingsMenuIndex + 1;
+        showSettingsMenu();
+      } else if (button === Button.LEFT) {
+        state.currentScreen = Screen.MAIN_MENU;
+        showMainMenu();
+      } else if (button === Button.RIGHT || button === Button.SELECT) {
+        if (state.settingsMenuIndex === SETTINGS_MENU_DELIVERY) beginDeliveryEditor();
+        else if (state.settingsMenuIndex === SETTINGS_MENU_SYRINGE) beginSyringeEditor();
+        else if (state.settingsMenuIndex === SETTINGS_MENU_BOLUS) {
+          state.bolusEnabled = !state.bolusEnabled;
+          savePersistentSettings();
+          showSettingsMenu();
+        } else if (state.settingsMenuIndex === SETTINGS_MENU_SOUND) {
+          state.soundEnabled = !state.soundEnabled;
+          savePersistentSettings();
+          showSettingsMenu();
+        } else if (state.settingsMenuIndex === SETTINGS_MENU_MAX_BOLUS) beginMaxBolusEditor();
+        else if (state.settingsMenuIndex === SETTINGS_MENU_MOTOR_INVERT) {
+          state.motorDirectionInverted = !state.motorDirectionInverted;
+          savePersistentSettings();
+          showSettingsMenu();
+        } else if (state.settingsMenuIndex === SETTINGS_MENU_STARTUP_SPEED) beginStartupMotorSpeedEditor();
+        else if (state.settingsMenuIndex === SETTINGS_MENU_MOTOR_TEST) beginSettingsSupportScreen();
+        else if (state.settingsMenuIndex === SETTINGS_MENU_SUPPORT) beginSupportInfoScreen();
+      }
+      return;
+    }
+
+    if (button === Button.LEFT) {
+      state.currentScreen = Screen.MAIN_MENU;
+      showMainMenu();
+    } else if (button === Button.RIGHT || button === Button.SELECT) {
+      beginDeliveryEditor();
+    }
+  }
+
+  function handlePumpButton(button) {
+    if (button === Button.NONE) return;
+    if (state.currentScreen === Screen.EDIT_BOLUS) return handleBolusEditorButton(button);
+    if (state.currentScreen === Screen.CONFIRM_BOLUS) return handleBolusConfirmButton(button);
+    if (state.currentScreen === Screen.CONFIRM_INFUSION) return handleInfusionConfirmButton(button);
+
+    if (button === Button.LEFT) stopPump("manual");
+    else if (button === Button.RIGHT) {
+      if (state.bolusEnabled) beginBolusEditor();
+      else showStatus("Bolus AUS", "Einstellung");
+    } else if (button === Button.SELECT && state.bolusEnabled) {
+      beginBolusEditor();
+    }
+  }
+
+  function handleRateEditorButton(button) {
+    if (button === Button.LEFT) moveEditCursor(-1);
+    else if (button === Button.RIGHT) moveEditCursor(1);
+    else if (button === Button.UP) changeRateDigit(1);
+    else if (button === Button.DOWN) changeRateDigit(-1);
+    else if (button === Button.SELECT) {
+      state.flowMlPerHour = state.editRateCentiMlPerHour / 100;
+      beginInfusionConfirm(false);
+    }
+  }
+
+  function handleVolumeEditorButton(button) {
+    if (button === Button.LEFT) moveEditCursor(-1);
+    else if (button === Button.RIGHT) moveEditCursor(1);
+    else if (button === Button.UP) changeVolumeDigit(1);
+    else if (button === Button.DOWN) changeVolumeDigit(-1);
+    else if (button === Button.SELECT) {
+      state.targetVolumeMl = state.editVolumeCentiMl / 100;
+      beginTimeEditor();
+    }
+  }
+
+  function handleTimeEditorButton(button) {
+    if (button === Button.LEFT) moveEditCursor(-1);
+    else if (button === Button.RIGHT) moveEditCursor(1);
+    else if (button === Button.UP) changeTimeDigit(1);
+    else if (button === Button.DOWN) changeTimeDigit(-1);
+    else if (button === Button.SELECT) {
+      state.targetTimeSeconds = state.editTimeSeconds;
+      const calculated = calculateVolumeTimeFlow();
+      if (calculated !== null) {
+        state.flowMlPerHour = calculated;
+        beginInfusionConfirm(true);
+      }
+    }
+  }
+
+  function handleDeliveryEditorButton(button) {
+    if (button === Button.LEFT) moveEditCursor(-1);
+    else if (button === Button.RIGHT) moveEditCursor(1);
+    else if (button === Button.UP) changeDeliveryDigit(1);
+    else if (button === Button.DOWN) changeDeliveryDigit(-1);
+    else if (button === Button.SELECT) {
+      applyDeliveryCenti(state.editDeliveryCentiMlPerCm);
+      savePersistentSettings();
+      state.currentScreen = Screen.MAIN_MENU;
+      showMainMenu();
+    }
+  }
+
+  function handleSyringeEditorButton(button) {
+    if (button === Button.LEFT) moveEditCursor(-1);
+    else if (button === Button.RIGHT) moveEditCursor(1);
+    else if (button === Button.UP) changeSyringeDigit(1);
+    else if (button === Button.DOWN) changeSyringeDigit(-1);
+    else if (button === Button.SELECT) {
+      applySyringeCenti(state.editSyringeCentiMl);
+      savePersistentSettings();
+      state.currentScreen = Screen.MAIN_MENU;
+      showMainMenu();
+    }
+  }
+
+  function handleMaxBolusEditorButton(button) {
+    if (button === Button.UP) changeMaxBolusPercent(1);
+    else if (button === Button.DOWN) changeMaxBolusPercent(-1);
+    else if (button === Button.LEFT) {
+      state.currentScreen = Screen.SETTINGS_MENU;
+      showSettingsMenu();
+    } else if (button === Button.SELECT || button === Button.RIGHT) {
+      applyMaxBolusPercent(state.editMaxBolusPercent);
+      savePersistentSettings();
+      state.currentScreen = Screen.MAIN_MENU;
+      showMainMenu();
+    }
+  }
+
+  function handleStartupMotorSpeedEditorButton(button) {
+    if (button === Button.UP) changeStartupMotorSpeedPercent(1);
+    else if (button === Button.DOWN) changeStartupMotorSpeedPercent(-1);
+    else if (button === Button.LEFT) {
+      state.currentScreen = Screen.SETTINGS_MENU;
+      showSettingsMenu();
+    } else if (button === Button.SELECT || button === Button.RIGHT) {
+      applyStartupJogSpeedPercent(state.editStartupJogSpeedPercent);
+      savePersistentSettings();
+      state.currentScreen = Screen.MAIN_MENU;
+      showMainMenu();
+    }
+  }
+
+  function handleBolusEditorButton(button) {
+    state.lastBolusInputMillis = state.now;
+    if (button === Button.LEFT) moveEditCursor(-1);
+    else if (button === Button.RIGHT) moveEditCursor(1);
+    else if (button === Button.UP) changeBolusDigit(1);
+    else if (button === Button.DOWN) changeBolusDigit(-1);
+    else if (button === Button.SELECT) {
+      if (prepareBolusPlan()) {
+        state.currentScreen = Screen.CONFIRM_BOLUS;
+        state.lastBolusInputMillis = state.now;
+        showBolusConfirm();
+      }
+    }
+  }
+
+  function handleBolusConfirmButton(button) {
+    if (button !== Button.NONE) state.lastBolusInputMillis = state.now;
+    if (button === Button.LEFT) {
+      state.currentScreen = Screen.EDIT_BOLUS;
+      showBolusEditor();
+    } else if (button === Button.SELECT || button === Button.RIGHT) {
+      startBolus();
+    }
+  }
+
+  function handleInfusionConfirmButton(button) {
+    if (button === Button.LEFT) {
+      state.currentScreen = state.pendingInfusionTargetVolumeEnabled ? Screen.EDIT_TIME : Screen.EDIT_RATE;
+      showCurrentScreen();
+    } else if (button === Button.SELECT || button === Button.RIGHT) {
+      if (state.pendingInfusionTargetVolumeEnabled) startVolumeTimeInfusion();
+      else {
+        state.targetVolumeEnabled = false;
+        startPump();
+      }
+    }
+  }
+
+  function moveEditCursor(delta) {
+    let maxIndex = state.currentScreen === Screen.EDIT_TIME ? 5 : 4;
+    if (state.currentScreen === Screen.EDIT_BOLUS) maxIndex = 3;
+    if (delta < 0) state.editCursorIndex = state.editCursorIndex === 0 ? maxIndex : state.editCursorIndex - 1;
+    else state.editCursorIndex = state.editCursorIndex === maxIndex ? 0 : state.editCursorIndex + 1;
+    showCurrentScreen();
+  }
+
+  function changeRateDigit(delta) {
+    state.editRateCentiMlPerHour = clamp(
+      state.editRateCentiMlPerHour + delta * rateDigitFactor(),
+      MIN_FLOW_CENTI_ML_PER_HOUR,
+      MAX_FLOW_CENTI_ML_PER_HOUR
+    );
+    showRateEditor();
+  }
+
+  function changeVolumeDigit(delta) {
+    state.editVolumeCentiMl = clamp(state.editVolumeCentiMl + delta * volumeDigitFactor(), 1, maxVolumeCentiMl());
+    showVolumeEditor();
+  }
+
+  function changeTimeDigit(delta) {
+    state.editTimeSeconds = clamp(state.editTimeSeconds + delta * timeDigitFactor(), 0, 359999);
+    showTimeEditor();
+  }
+
+  function changeDeliveryDigit(delta) {
+    state.editDeliveryCentiMlPerCm = clamp(
+      state.editDeliveryCentiMlPerCm + delta * deliveryDigitFactor(),
+      MIN_DELIVERY_CENTI_ML_PER_CM,
+      MAX_DELIVERY_CENTI_ML_PER_CM
+    );
+    showDeliveryEditor();
+  }
+
+  function changeSyringeDigit(delta) {
+    state.editSyringeCentiMl = clamp(
+      state.editSyringeCentiMl + delta * deliveryDigitFactor(),
+      MIN_SYRINGE_CENTI_ML,
+      MAX_SYRINGE_CENTI_ML
+    );
+    showSyringeEditor();
+  }
+
+  function changeMaxBolusPercent(delta) {
+    state.editMaxBolusPercent = clamp(state.editMaxBolusPercent + delta, MIN_MAX_BOLUS_PERCENT, MAX_MAX_BOLUS_PERCENT);
+    showMaxBolusEditor();
+  }
+
+  function changeStartupMotorSpeedPercent(delta) {
+    state.editStartupJogSpeedPercent = clamp(
+      state.editStartupJogSpeedPercent + delta * STARTUP_JOG_SPEED_STEP_PERCENT,
+      MIN_STARTUP_JOG_SPEED_PERCENT,
+      MAX_STARTUP_JOG_SPEED_PERCENT
+    );
+    showStartupMotorSpeedEditor();
+  }
+
+  function changeBolusDigit(delta) {
+    state.editBolusCentiMl = clamp(state.editBolusCentiMl + delta * bolusDigitFactor(), MIN_BOLUS_CENTI_ML, maxBolusCentiMl());
+    showBolusEditor();
+  }
+
+  function rateDigitFactor() { return deliveryDigitFactor(); }
+  function volumeDigitFactor() { return deliveryDigitFactor(); }
+
+  function timeDigitFactor() {
+    switch (state.editCursorIndex) {
+      case 0: return 36000;
+      case 1: return 3600;
+      case 2: return 600;
+      case 3: return 60;
+      case 4: return 10;
+      default: return 1;
+    }
+  }
+
+  function deliveryDigitFactor() {
+    switch (state.editCursorIndex) {
+      case 0: return 10000;
+      case 1: return 1000;
+      case 2: return 100;
+      case 3: return 10;
+      default: return 1;
+    }
+  }
+
+  function bolusDigitFactor() {
+    switch (state.editCursorIndex) {
+      case 0: return 1000;
+      case 1: return 100;
+      case 2: return 10;
+      default: return 1;
+    }
+  }
+
+  function editCursorColumn() {
+    if (state.currentScreen === Screen.EDIT_TIME) {
+      switch (state.editCursorIndex) {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 3;
+        case 3: return 4;
+        case 4: return 6;
+        default: return 7;
+      }
+    }
+    if (state.currentScreen === Screen.EDIT_BOLUS) {
+      switch (state.editCursorIndex) {
+        case 0: return 10;
+        case 1: return 11;
+        case 2: return 13;
+        default: return 14;
+      }
+    }
+    switch (state.editCursorIndex) {
+      case 0: return 0;
+      case 1: return 1;
+      case 2: return 2;
+      case 3: return 4;
+      default: return 5;
+    }
+  }
+
+  function calculateVolumeTimeFlow() {
+    if (state.targetTimeSeconds === 0 || state.targetVolumeMl <= 0) {
+      showStatus("Ungueltige Zeit", "oder Volumen");
+      return null;
+    }
+    if (state.targetVolumeMl > syringeVolumeMl()) {
+      showStatus("Vol > Spritze", "Setting pruefen");
+      return null;
+    }
+    const nextFlow = state.targetVolumeMl * 3600 / state.targetTimeSeconds;
+    if (nextFlow < MIN_FLOW_ML_PER_HOUR || nextFlow > MAX_FLOW_ML_PER_HOUR) {
+      showStatus("Rate ungueltig", "Zeit/Vol pruefen");
+      return null;
+    }
+    return nextFlow;
+  }
+
+  function startVolumeTimeInfusion() {
+    const calculated = calculateVolumeTimeFlow();
+    if (calculated === null) return false;
+    state.flowMlPerHour = calculated;
+    state.targetVolumeEnabled = true;
+    if (startPump()) return true;
+    state.targetVolumeEnabled = false;
+    return false;
+  }
+
+  function prepareBolusPlan() {
+    if (!state.bolusEnabled) {
+      showStatus("Bolus AUS", "Einstellung");
+      return false;
+    }
+    const plan = calculateBolusPlan();
+    if (!plan) return false;
+    state.pendingBolusFlowMlPerHour = plan.flow;
+    state.pendingBolusDurationMillis = plan.duration;
+    return true;
+  }
+
+  function calculateBolusPlan() {
+    if (!state.bolusEnabled) {
+      showStatus("Bolus AUS", "Einstellung");
+      return null;
+    }
+    if (!state.pumpRunning || state.bolusActive) {
+      showStatus("Bolus blockiert", "Bitte warten");
+      return null;
+    }
+    const availableFlow = MAX_FLOW_ML_PER_HOUR - state.baseInfusionFlowMlPerHour;
+    if (availableFlow <= 0) {
+      showStatus("Bolus blockiert", "Rate Maximum");
+      return null;
+    }
+    const bolusMl = state.editBolusCentiMl / 100;
+    let duration = BOLUS_DURATION_MS;
+    let bolusFlow = bolusMl * 3600000 / duration;
+    if (state.baseInfusionFlowMlPerHour + bolusFlow > MAX_FLOW_ML_PER_HOUR) {
+      duration = Math.floor((bolusMl * 3600000 / availableFlow) + 0.999);
+      if (duration < BOLUS_DURATION_MS) duration = BOLUS_DURATION_MS;
+      bolusFlow = bolusMl * 3600000 / duration;
+    }
+    let totalFlow = state.baseInfusionFlowMlPerHour + bolusFlow;
+    if (totalFlow > MAX_FLOW_ML_PER_HOUR) totalFlow = MAX_FLOW_ML_PER_HOUR;
+    const requestedStepRateHz = stepRateHzForFlow(totalFlow);
+    if (requestedStepRateHz > maxStepRateHz()) {
+      showStatus("Bolus zu schnell", "Motor Limit");
+      return null;
+    }
+    if (!timerCanRepresentStepRate(requestedStepRateHz)) {
+      showStatus("Bolus zu langsam", "Timer Limit");
+      return null;
+    }
+    return { flow: totalFlow, duration };
+  }
+
+  function startBolus() {
+    const plan = calculateBolusPlan();
+    if (!plan) return false;
+    if (!applyFlowRate(plan.flow)) return false;
+    state.bolusDurationMillis = plan.duration;
+    state.bolusActive = true;
+    state.bolusStartMillis = state.now;
+    state.currentScreen = Screen.PUMP_RUNNING;
+    showPumpScreen();
+    return true;
+  }
+
+  function updateBolusState() {
+    if ((state.currentScreen === Screen.EDIT_BOLUS || state.currentScreen === Screen.CONFIRM_BOLUS) &&
+        state.now - state.lastBolusInputMillis >= BOLUS_MENU_TIMEOUT_MS) {
+      state.currentScreen = Screen.PUMP_RUNNING;
+      showPumpScreen();
+    }
+    if (state.bolusActive && state.now - state.bolusStartMillis >= state.bolusDurationMillis) {
+      state.bolusActive = false;
+      if (!applyFlowRate(state.baseInfusionFlowMlPerHour)) {
+        stopPump("timer");
+        return;
+      }
+      if (!state.statusActive) showPumpScreen();
+    }
+  }
+
+  function applyFlowRate(nextFlowMlPerHour) {
+    if (nextFlowMlPerHour < MIN_FLOW_ML_PER_HOUR || nextFlowMlPerHour > MAX_FLOW_ML_PER_HOUR) {
+      showStatus("Rate ungueltig", "Wert pruefen");
+      return false;
+    }
+    const requestedStepRateHz = stepRateHzForFlow(nextFlowMlPerHour);
+    if (requestedStepRateHz > maxStepRateHz()) {
+      showStatus("Rate zu schnell", "Motor Limit");
+      return false;
+    }
+    if (!timerCanRepresentStepRate(requestedStepRateHz)) {
+      showStatus("Rate zu langsam", "Timer Limit");
+      return false;
+    }
+    state.flowMlPerHour = nextFlowMlPerHour;
+    return true;
+  }
+
+  function canStartPump() {
+    if (!state.tmc2209UartVerified) {
+      showStatus("TMC2209 Fehler", "UART lesen fail");
+      return false;
+    }
+    if (ui.forwardEndstop.checked) {
+      showStatus("Forward blocked", "Endstop aktiv  ");
+      return false;
+    }
+    if (ui.backwardEndstop.checked) {
+      showStatus("Backward blocked", "Endstop aktiv  ");
+      return false;
+    }
+    return true;
+  }
+
+  function startPump() {
+    if (!canStartPump()) return false;
+    if (state.flowMlPerHour < MIN_FLOW_ML_PER_HOUR || state.flowMlPerHour > MAX_FLOW_ML_PER_HOUR) {
+      showStatus("Rate ungueltig", "Wert pruefen");
+      return false;
+    }
+    const requestedStepRateHz = stepRateHzForFlow(state.flowMlPerHour);
+    if (requestedStepRateHz > maxStepRateHz()) {
+      showStatus("Rate zu schnell", "Motor Limit");
+      return false;
+    }
+    if (!timerCanRepresentStepRate(requestedStepRateHz)) {
+      showStatus("Rate zu langsam", "Timer Limit");
+      return false;
+    }
+    state.pumpedMl = 0;
+    state.baseInfusionFlowMlPerHour = state.flowMlPerHour;
+    state.bolusActive = false;
+    state.pumpStartMillis = state.now;
+    state.lastPumpMillis = state.now;
+    state.lastDisplayMillis = 0;
+    state.pumpRunning = true;
+    state.currentScreen = Screen.PUMP_RUNNING;
+    showPumpScreen();
+    return true;
+  }
+
+  function stopPump(reason) {
+    const expectedForwardEndstop = reason === "endstop" && !state.targetVolumeEnabled && ui.forwardEndstop.checked && !ui.backwardEndstop.checked;
+    if (state.bolusActive) state.flowMlPerHour = state.baseInfusionFlowMlPerHour;
+    state.baseInfusionFlowMlPerHour = state.flowMlPerHour;
+    state.pumpRunning = false;
+    if (reason === "manual" || reason === "target" || expectedForwardEndstop) state.targetVolumeEnabled = false;
+    state.bolusActive = false;
+    state.currentScreen = Screen.MAIN_MENU;
+    if (reason === "manual") showStatus("Pump stopped   ", "Manual stop    ");
+    else if (expectedForwardEndstop) showAcknowledgedStatus("Ziel erreicht", "Infusion stop");
+    else if (reason === "endstop") showAlarm("ALARM Endstop  ", "SELECT quittiert");
+    else if (reason === "target") showAcknowledgedStatus("Ziel erreicht", "Infusion stop");
+    else showAlarm("ALARM Timer    ", "SELECT quittiert");
+  }
+
+  function startMotorSelfTest() {
+    if (endstopActiveForDirection(state.motorTestDirectionForward)) {
+      showStatus("Test blockiert", "Endstop aktiv");
+      return false;
+    }
+    state.motorTestRunning = true;
+    state.settingsSupportStartMillis = state.now;
+    return true;
+  }
+
+  function stopMotorSelfTest() {
+    state.motorTestRunning = false;
+  }
+
+  function updateStartupMotorJog(button) {
+    if (button === Button.UP || button === Button.DOWN) {
+      state.startupJogRunning = true;
+      state.startupJogDirectionForward = button === Button.UP;
+      setTimeout(() => {
+        state.startupJogRunning = false;
+        updatePanel();
+      }, 450);
+    }
+  }
+
+  function stopStartupMotorJog() {
+    state.startupJogRunning = false;
+  }
+
+  function tick(now) {
+    const dt = now - lastTick;
+    lastTick = now;
+    state.now += dt;
+
+    if (state.currentScreen === Screen.STARTUP_SPLASH && state.now - state.startupScreenStartMillis >= STARTUP_SPLASH_MS) {
+      updateStartupScreens(Button.NONE);
+    }
+
+    updateStatusScreen();
+
+    if (state.pumpRunning) {
+      const pumpDt = state.now - state.lastPumpMillis;
+      state.lastPumpMillis = state.now;
+      state.pumpedMl += state.flowMlPerHour * pumpDt / 3600000;
+
+      if (ui.forwardEndstop.checked || ui.backwardEndstop.checked) {
+        stopPump("endstop");
+      } else if (state.targetVolumeEnabled && state.pumpedMl >= state.targetVolumeMl) {
+        state.pumpedMl = state.targetVolumeMl;
+        stopPump("target");
+      } else {
+        updateBolusState();
+        if (!state.statusActive && state.currentScreen === Screen.PUMP_RUNNING && state.now - state.lastDisplayMillis >= DISPLAY_UPDATE_MS) {
+          showPumpScreen();
+        }
+      }
+    }
+
+    updatePanel();
+    requestAnimationFrame(tick);
+  }
+
+  function pressButton(button) {
+    if (!button || button === Button.NONE) return;
+    flashButton(button);
+    appendLog(shortButton(button));
+
+    if (state.currentScreen === Screen.STARTUP_SPLASH || state.currentScreen === Screen.STARTUP_INFO) {
+      updateStartupScreens(button);
+      updatePanel();
+      return;
+    }
+
+    updateStatusScreen();
+
+    if (state.alarmActive) {
+      if (button === Button.SELECT) clearAlarm();
+      updatePanel();
+      return;
+    }
+
+    if (!state.pumpRunning) {
+      if (state.statusActive) {
+        if (button === Button.SELECT) acknowledgeStatus();
+        updatePanel();
+        return;
+      }
+      handleUiButton(button);
+      updatePanel();
+      return;
+    }
+
+    if (!state.statusActive) handlePumpButton(button);
+    else if (button === Button.LEFT) stopPump("manual");
+    updateBolusState();
+    updatePanel();
+  }
+
+  function flashButton(button) {
+    clearTimeout(flashTimer);
+    tft.querySelectorAll(".control-zone").forEach(zone => {
+      zone.classList.toggle("active", zone.dataset.button === button);
+    });
+    flashTimer = setTimeout(() => {
+      tft.querySelectorAll(".control-zone").forEach(zone => zone.classList.remove("active"));
+    }, 140);
+  }
+
+  function buttonFromScreenPoint(x, y) {
+    if (y < HEIGHT - TOUCH_BUTTON_BAR_HEIGHT) return Button.NONE;
+    const zone = Math.floor(x * 5 / WIDTH);
+    switch (zone) {
+      case 0: return Button.LEFT;
+      case 1: return Button.UP;
+      case 2: return Button.SELECT;
+      case 3: return Button.DOWN;
+      default: return Button.RIGHT;
+    }
+  }
+
+  function handlePointer(event) {
+    const rectBox = tft.getBoundingClientRect();
+    const x = clamp(Math.floor((event.clientX - rectBox.left) * WIDTH / rectBox.width), 0, WIDTH - 1);
+    const y = clamp(Math.floor((event.clientY - rectBox.top) * HEIGHT / rectBox.height), 0, HEIGHT - 1);
+    const button = buttonFromScreenPoint(x, y);
+    lastTouchLabel = `${x},${y} ${button === Button.NONE ? "NONE" : shortButton(button)}`;
+    if (button !== Button.NONE) pressButton(button);
+    updatePanel();
+  }
+
+  function updatePanel() {
+    ui.stateScreen.textContent = labels.get(state.currentScreen) || state.currentScreen;
+    ui.statePump.textContent = state.pumpRunning ? "RUN" : "STOP";
+    ui.statePump.className = `badge ${state.pumpRunning ? "ok" : "warn"}`;
+    ui.stateUart.textContent = state.tmc2209UartVerified ? "OK" : "FAIL";
+    ui.stateUart.className = `badge ${state.tmc2209UartVerified ? "ok" : "bad"}`;
+    ui.stateBolus.textContent = state.bolusActive ? "active" : (state.bolusEnabled ? "enabled" : "disabled");
+    ui.stateFlow.textContent = `${state.flowMlPerHour.toFixed(2)} ml/h`;
+    ui.statePumped.textContent = `${state.pumpedMl.toFixed(3)} ml`;
+    ui.stateTarget.textContent = state.targetVolumeEnabled ? `${state.targetVolumeMl.toFixed(2)} ml` : "none";
+    ui.stateTouch.textContent = lastTouchLabel;
+    ui.stateSyringe.textContent = `${(state.syringeCentiMl / 100).toFixed(2)} ml`;
+    ui.stateDelivery.textContent = `${state.deliveryMlPerCm.toFixed(2)} ml/cm`;
+    ui.stateMaxBolus.textContent = `${state.maxBolusPercent}%`;
+    ui.stateSound.textContent = state.soundEnabled ? "EIN" : "AUS";
+    ui.stateInvert.textContent = state.motorDirectionInverted ? "AN" : "AUS";
+  }
+
+  function appendLog(message) {
+    const line = document.createElement("div");
+    line.textContent = `${Math.floor(state.now).toString().padStart(6, " ")} ms  ${message}`;
+    logNode.prepend(line);
+    while (logNode.childElementCount > 16) logNode.lastChild.remove();
+  }
+
+  function boot() {
+    Object.assign(state, createDefaultState());
+    loadPersistentSettings();
+    state.tmc2209UartVerified = ui.uartOk.checked;
+    state.startupScreenStartMillis = state.now;
+    state.currentScreen = Screen.STARTUP_SPLASH;
+    state.statusActive = false;
+    state.alarmActive = false;
+    state.pumpRunning = false;
+    state.pumpedMl = 0;
+    showSplash();
+    appendLog("BOOT");
+    updatePanel();
+  }
+
+  function loadPersistentSettings() {
+    const raw = localStorage.getItem("diy-syringe-pump-emulator-settings-v7");
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      if (validDeliveryCenti(saved.deliveryCentiMlPerCm)) applyDeliveryCenti(saved.deliveryCentiMlPerCm);
+      if (validSyringeCenti(saved.syringeCentiMl)) applySyringeCenti(saved.syringeCentiMl);
+      if (typeof saved.bolusEnabled === "boolean") state.bolusEnabled = saved.bolusEnabled;
+      if (typeof saved.soundEnabled === "boolean") state.soundEnabled = saved.soundEnabled;
+      if (typeof saved.motorDirectionInverted === "boolean") state.motorDirectionInverted = saved.motorDirectionInverted;
+      if (validMaxBolusPercent(saved.maxBolusPercent)) state.maxBolusPercent = saved.maxBolusPercent;
+      if (validStartupJogSpeedPercent(saved.startupJogSpeedPercent)) state.startupJogSpeedPercent = saved.startupJogSpeedPercent;
+    } catch (_error) {
+      state.settingsResetToDefaults = true;
+    }
+  }
+
+  function savePersistentSettings() {
+    localStorage.setItem("diy-syringe-pump-emulator-settings-v7", JSON.stringify({
+      deliveryCentiMlPerCm: Math.floor(state.deliveryMlPerCm * 100 + 0.5),
+      syringeCentiMl: state.syringeCentiMl,
+      bolusEnabled: state.bolusEnabled,
+      soundEnabled: state.soundEnabled,
+      motorDirectionInverted: state.motorDirectionInverted,
+      maxBolusPercent: state.maxBolusPercent,
+      startupJogSpeedPercent: state.startupJogSpeedPercent
+    }));
+  }
+
+  function resetSettings() {
+    localStorage.removeItem("diy-syringe-pump-emulator-settings-v7");
+    boot();
+  }
+
+  function applyDeliveryCenti(value) {
+    state.deliveryMlPerCm = value / 100;
+  }
+
+  function applySyringeCenti(value) {
+    state.syringeCentiMl = value;
+    if (state.targetVolumeMl > syringeVolumeMl()) state.targetVolumeMl = syringeVolumeMl();
+  }
+
+  function applyMaxBolusPercent(value) { state.maxBolusPercent = value; }
+  function applyStartupJogSpeedPercent(value) { state.startupJogSpeedPercent = value; }
+
+  function validDeliveryCenti(value) { return Number.isFinite(value) && value >= MIN_DELIVERY_CENTI_ML_PER_CM && value <= MAX_DELIVERY_CENTI_ML_PER_CM; }
+  function validSyringeCenti(value) { return Number.isFinite(value) && value >= MIN_SYRINGE_CENTI_ML && value <= MAX_SYRINGE_CENTI_ML; }
+  function validMaxBolusPercent(value) { return Number.isFinite(value) && value >= MIN_MAX_BOLUS_PERCENT && value <= MAX_MAX_BOLUS_PERCENT; }
+  function validStartupJogSpeedPercent(value) { return Number.isFinite(value) && value >= MIN_STARTUP_JOG_SPEED_PERCENT && value <= MAX_STARTUP_JOG_SPEED_PERCENT; }
+
+  function maxBolusCentiMl() {
+    const limit = Math.floor((state.syringeCentiMl * state.maxBolusPercent + 50) / 100);
+    return Math.max(limit, MIN_BOLUS_CENTI_ML);
+  }
+
+  function maxVolumeCentiMl() { return state.syringeCentiMl; }
+  function syringeVolumeMl() { return state.syringeCentiMl / 100; }
+
+  function maxStepRateHz() {
+    return MAXRPM * NOFSTEPSPER360 * NOFMICROSTEPS / 60;
+  }
+
+  function stepsPerMl() {
+    const effectiveDelivery = state.deliveryMlPerCm > 0 ? state.deliveryMlPerCm : DEFAULT_DELIVERY_CENTI_ML_PER_CM / 100;
+    const stepsPerCm = NOFSTEPSPER360 * NOFMICROSTEPS * (10.0 / MMPER360);
+    return stepsPerCm / effectiveDelivery;
+  }
+
+  function stepRateHzForFlow(mlPerHour) {
+    return mlPerHour * stepsPerMl() / 3600;
+  }
+
+  function timerCanRepresentStepRate(stepRateHz) {
+    if (stepRateHz <= 0) return false;
+    const prescalers = [1, 8, 64, 256, 1024];
+    for (const prescaler of prescalers) {
+      const totalTicksFloat = F_CPU / (prescaler * stepRateHz);
+      if (totalTicksFloat < 1 || totalTicksFloat > 65536.5) continue;
+      const totalTicks = Math.floor(totalTicksFloat + 0.5);
+      let highTicks = Math.floor(((F_CPU / 1000000) * STEP_PULSE_US + prescaler - 1) / prescaler);
+      if (highTicks < 1) highTicks = 1;
+      if (totalTicks > highTicks && totalTicks <= 65536) {
+        const lowTicks = totalTicks - highTicks;
+        if (lowTicks >= 1 && lowTicks <= 65536 && highTicks <= 65536) return true;
+      }
+    }
+    return false;
+  }
+
+  function endstopActiveForDirection(forward) {
+    return forward ? ui.backwardEndstop.checked : ui.forwardEndstop.checked;
+  }
+
+  function formatElapsedTime(elapsedSeconds) {
+    const hours = Math.floor(elapsedSeconds / 3600);
+    const minutes = Math.floor((elapsedSeconds / 60) % 60);
+    const seconds = Math.floor(elapsedSeconds % 60);
+    if (hours > 9) return "9:59:59";
+    return `${hours}:${pad(minutes, 2)}:${pad(seconds, 2)}`;
+  }
+
+  function pad(value, width) {
+    return String(Math.trunc(Math.abs(value))).padStart(width, "0");
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function dtostrf(value, width, decimals) {
+    return value.toFixed(decimals).padStart(width, " ");
+  }
+
+  function shortButton(button) {
+    switch (button) {
+      case Button.LEFT: return "LEFT";
+      case Button.UP: return "UP";
+      case Button.SELECT: return "SELECT";
+      case Button.DOWN: return "DOWN";
+      case Button.RIGHT: return "RIGHT";
+      default: return "NONE";
+    }
+  }
+
+  function syncHardwareFromPanel() {
+    state.tmc2209UartVerified = ui.uartOk.checked;
+    if (state.pumpRunning && (ui.forwardEndstop.checked || ui.backwardEndstop.checked)) {
+      stopPump("endstop");
+    }
+    updatePanel();
+  }
+
+  tft.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    handlePointer(event);
+  });
+
+  window.addEventListener("keydown", event => {
+    const keyMap = {
+      ArrowLeft: Button.LEFT,
+      ArrowUp: Button.UP,
+      Enter: Button.SELECT,
+      " ": Button.SELECT,
+      ArrowDown: Button.DOWN,
+      ArrowRight: Button.RIGHT
+    };
+    const button = keyMap[event.key];
+    if (!button) return;
+    event.preventDefault();
+    lastTouchLabel = `keyboard ${shortButton(button)}`;
+    pressButton(button);
+  });
+
+  ui.boot.addEventListener("click", boot);
+  ui.resetSettings.addEventListener("click", resetSettings);
+  ui.uartOk.addEventListener("change", syncHardwareFromPanel);
+  ui.forwardEndstop.addEventListener("change", syncHardwareFromPanel);
+  ui.backwardEndstop.addEventListener("change", syncHardwareFromPanel);
+
+  function resizeScreen() {
+    const wrap = tft.parentElement.getBoundingClientRect();
+    const scale = Math.max(0.55, Math.min(2, wrap.width / WIDTH, wrap.height / HEIGHT));
+    tft.style.setProperty("--screen-scale", scale.toFixed(4));
+  }
+
+  window.addEventListener("resize", resizeScreen);
+  resizeScreen();
+  boot();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
