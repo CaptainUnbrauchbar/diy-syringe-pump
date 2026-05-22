@@ -127,13 +127,24 @@
 #define DEBOUNCE_DELAY_MS 50
 #define DISPLAY_UPDATE_MS 250
 #define STEP_PULSE_US 15
-#define TOUCH_MIN_PRESSURE 5
+#define TOUCH_MIN_PRESSURE 40
 #define TOUCH_MAX_PRESSURE 1023
 #define TOUCH_ADC_MAX 1023
 #define TOUCH_ANALOG_SAMPLES 4
 #define TOUCH_SETTLE_US 150
 #define TOUCH_DEBOUNCE_MS DEBOUNCE_DELAY_MS
-#define TOUCH_BUTTON_BAR_HEIGHT 54
+#define TOUCH_RAW_MARGIN 48
+#define TOUCH_STABLE_RAW_DELTA 24
+#define TOUCH_STABLE_PRESSURE_DELTA 80
+// Bottom action bar. Bigger than before for easier targeting but small enough
+// that existing body layouts still fit above it (240 - 64 = 176 px content).
+#define TOUCH_BUTTON_BAR_HEIGHT 64
+#define ACTION_BAR_HEIGHT TOUCH_BUTTON_BAR_HEIGHT
+#define ACTION_HEADER_HEIGHT 28
+#define ACTION_TITLE_BACK_WIDTH 56
+#define ACTION_PRESS_HOLD_INITIAL_MS 380
+#define ACTION_PRESS_HOLD_REPEAT_MS 90
+#define MAX_ACTION_SLOTS 5
 #define LEFT_EDGE_COMPENSATION_PX 14
 #define TOP_EDGE_COMPENSATION_PX 12
 #define LEFT_EDGE_COMPENSATION_ZONE_PX 56
@@ -482,8 +493,8 @@ private:
 
 #define SETTINGS_EEPROM_ADDRESS 0
 #define SETTINGS_MAGIC 0x5046
-#define SETTINGS_VERSION 7
-#define SETTINGS_MENU_COUNT 9
+#define SETTINGS_VERSION 9
+#define SETTINGS_MENU_COUNT 14
 #define SETTINGS_MENU_DELIVERY 0
 #define SETTINGS_MENU_SYRINGE 1
 #define SETTINGS_MENU_BOLUS 2
@@ -491,8 +502,26 @@ private:
 #define SETTINGS_MENU_MAX_BOLUS 4
 #define SETTINGS_MENU_MOTOR_INVERT 5
 #define SETTINGS_MENU_STARTUP_SPEED 6
-#define SETTINGS_MENU_MOTOR_TEST 7
-#define SETTINGS_MENU_SUPPORT 8
+#define SETTINGS_MENU_TEST_MODE 7
+#define SETTINGS_MENU_PRESSURE 8
+#define SETTINGS_MENU_PRESSURE_SCALE 9
+#define SETTINGS_MENU_PRESSURE_ALARM 10
+#define SETTINGS_MENU_PRESSURE_ZERO 11
+#define SETTINGS_MENU_MOTOR_TEST 12
+#define SETTINGS_MENU_SUPPORT 13
+#define PRESSURE_SCALE_MIN 1
+#define PRESSURE_SCALE_MAX 10
+#define PRESSURE_SCALE_DEFAULT 5
+#define PRESSURE_ALARM_MIN 1
+#define PRESSURE_ALARM_MAX 10
+#define PRESSURE_ALARM_DEFAULT 7
+#define PRESSURE_BASELINE_DEFAULT 0
+#define PRESSURE_SG_MAX 1023
+// Mapping from the 1..10 scale to the SG-units that count as 100% bar fill.
+// Scale 1 = least sensitive (wider span, bar fills slowly even at high load).
+// Scale 10 = most sensitive (narrow span, bar fills quickly).
+#define PRESSURE_FULL_SCALE_UNITS_BASE 50
+#define PRESSURE_ALARM_SUSTAIN_TICKS 3
 #define SETTINGS_SUPPORT_TIMEOUT_MS 10000UL
 #define STARTUP_SPLASH_MS 1500UL
 #define MAIN_MENU_COUNT 3
@@ -503,7 +532,7 @@ private:
 #define START_MENU_VOLUME_TIME 0
 #define START_MENU_RATE 1
 
-#if SETTINGS_MENU_COUNT != 9
+#if SETTINGS_MENU_COUNT != 14
 #error SETTINGS_MENU_COUNT must match the explicit SETTINGS_MENU_* indices.
 #endif
 
@@ -515,16 +544,50 @@ private:
 #error START_MENU_COUNT must match the explicit START_MENU_* indices.
 #endif
 
-const char PROMPT_INFO_LINE_1[] PROGMEM = "Insert Syringe";
-const char PROMPT_RATE[] PROGMEM = "Enter Infusion Rate ml/h";
-const char PROMPT_VOLUME[] PROGMEM = "Target Volume";
-const char PROMPT_TIME[] PROGMEM = "Target Time";
-const char PROMPT_DELIVERY[] PROGMEM = "Fluid Amount ml/cm";
-const char PROMPT_SYRINGE[] PROGMEM = "Syringe ml";
+const char PROMPT_INFO_LINE_1[] PROGMEM = "Jetzt Spritze einlegen";
+const char PROMPT_RATE[] PROGMEM = "Infusionsrate";
+const char PROMPT_VOLUME[] PROGMEM = "Zielvolumen";
+const char PROMPT_TIME[] PROGMEM = "Zielzeit";
+const char PROMPT_DELIVERY[] PROGMEM = "Fluessigkeit (ml/cm)";
+const char PROMPT_SYRINGE[] PROGMEM = "Eingelegte Spritze";
 const char SUPPORT_DISPLAY_LINE_1[] = "You can solve";
 const char SUPPORT_DISPLAY_LINE_2[] = "it yourself! :)";
 
 struct PersistedSettings
+{
+	uint16_t magic;
+	uint8_t version;
+	uint8_t motorDirectionInverted;
+	uint32_t deliveryCentiMlPerCm;
+	uint32_t syringeCentiMl;
+	uint8_t bolusEnabled;
+	uint8_t soundEnabled;
+	uint8_t maxBolusPercent;
+	uint8_t startupJogSpeedPercent;
+	uint8_t testModeEnabled;
+	uint8_t pressureMonitorEnabled;
+	uint8_t pressureScale;
+	uint8_t pressureAlarmLevel;
+	uint16_t pressureBaseline;
+	uint16_t crc;
+};
+
+struct PersistedSettingsVersion8
+{
+	uint16_t magic;
+	uint8_t version;
+	uint8_t motorDirectionInverted;
+	uint32_t deliveryCentiMlPerCm;
+	uint32_t syringeCentiMl;
+	uint8_t bolusEnabled;
+	uint8_t soundEnabled;
+	uint8_t maxBolusPercent;
+	uint8_t startupJogSpeedPercent;
+	uint8_t testModeEnabled;
+	uint16_t crc;
+};
+
+struct PersistedSettingsVersion7
 {
 	uint16_t magic;
 	uint8_t version;
@@ -555,7 +618,42 @@ UnoParallelTft tft;
 uint16_t tftWidth = 0;
 uint16_t tftHeight = 0;
 const void *lastScreenFrameKey = NULL;
-bool controlsVisible = false;
+
+// Action bar (bottom touch button bar) is now context-sensitive. Each screen
+// declares the slots it needs via setActionBar(). Slots are diff-rendered to
+// avoid the previous full-bar repaint on every screen change.
+enum ActionSlotMode : uint8_t
+{
+	ACTION_MODE_RELEASE = 0, // fires on touch-up (slid-off cancels)
+	ACTION_MODE_REPEAT = 1,  // fires on touch-down + auto-repeats while held
+	ACTION_MODE_HOLD = 2     // fires every tick while held (motor jog)
+};
+
+struct ActionSlot
+{
+	const char *glyph;
+	const char *sublabel;
+	uint16_t fillColor;
+	uint16_t textColor;
+	uint8_t action;      // Button enum value
+	uint8_t mode;        // ActionSlotMode
+};
+
+struct ActionBar
+{
+	uint8_t count;
+	ActionSlot slots[MAX_ACTION_SLOTS];
+};
+
+ActionBar currentActionBar = {0, {}};
+ActionBar renderedActionBar = {0xFF, {}}; // sentinel: force first render
+int8_t pressedSlot = -1;                  // visual press state
+int8_t renderedPressedSlot = -1;
+bool pressedTitleBack = false;
+uint32_t pressStartMs = 0;
+uint32_t lastRepeatMs = 0;
+bool currentScreenHasBack = false;
+bool renderedHasBack = false;
 
 void initializeDisplay()
 {
@@ -575,83 +673,220 @@ void printProgmem(PGM_P text)
 		tft.write((uint8_t)character);
 }
 
-void drawControls()
+// ----- Action bar rendering ---------------------------------------------
+static bool actionSlotsEqual(const ActionSlot &a, const ActionSlot &b)
 {
-	const char *labels[5] = {"<", "UP", "OK", "DN", ">"};
-	uint16_t colors[5] = {TFT_NAVY, TFT_NAVY, TFT_GREEN, TFT_NAVY, TFT_NAVY};
-	int16_t top = tftHeight - TOUCH_BUTTON_BAR_HEIGHT;
-	int16_t buttonWidth = tftWidth / 5;
-	for (uint8_t index = 0; index < 5; index++)
+	return a.glyph == b.glyph && a.sublabel == b.sublabel && a.fillColor == b.fillColor && a.textColor == b.textColor && a.action == b.action && a.mode == b.mode;
+}
+
+static void actionSlotGeometry(uint8_t i, int16_t &left, int16_t &width)
+{
+	uint8_t n = currentActionBar.count;
+	if (n == 0)
 	{
-		int16_t left = index * buttonWidth;
-		int16_t width = index == 4 ? tftWidth - left : buttonWidth;
-		tft.fillRect(left, top, width, TOUCH_BUTTON_BAR_HEIGHT, colors[index]);
-		tft.drawRect(left, top, width, TOUCH_BUTTON_BAR_HEIGHT, TFT_WHITE);
-		tft.setTextSize(2);
-		tft.setTextColor(TFT_WHITE, colors[index]);
-		tft.setCursor(left + width / 2 - (int16_t)strlen(labels[index]) * 6, top + 18);
-		tft.print(labels[index]);
+		left = 0;
+		width = tftWidth;
+		return;
+	}
+	int16_t slotW = tftWidth / n;
+	left = (int16_t)i * slotW;
+	width = (i == n - 1) ? (tftWidth - left) : slotW;
+}
+
+void drawActionSlot(uint8_t i, bool pressed)
+{
+	if (i >= currentActionBar.count)
+		return;
+	const ActionSlot &s = currentActionBar.slots[i];
+	int16_t left, width;
+	actionSlotGeometry(i, left, width);
+	int16_t top = tftHeight - ACTION_BAR_HEIGHT;
+	uint16_t fill = pressed ? TFT_YELLOW : s.fillColor;
+	uint16_t fg = pressed ? TFT_BLACK : s.textColor;
+	tft.fillRect(left, top, width, ACTION_BAR_HEIGHT, fill);
+	tft.drawRect(left, top, width, ACTION_BAR_HEIGHT, pressed ? TFT_WHITE : TFT_WHITE);
+	if (pressed)
+	{
+		// Extra inner outline to make the pressed state pop visually.
+		tft.drawRect(left + 1, top + 1, width - 2, ACTION_BAR_HEIGHT - 2, TFT_BLACK);
+	}
+	if (s.glyph)
+	{
+		uint8_t size = 3;
+		int16_t textW = (int16_t)strlen(s.glyph) * 6 * size;
+		int16_t textY = top + (s.sublabel ? 6 : (ACTION_BAR_HEIGHT - 8 * size) / 2);
+		tft.setTextSize(size);
+		tft.setTextColor(fg, fill);
+		tft.setCursor(left + (width - textW) / 2, textY);
+		tft.print(s.glyph);
+	}
+	if (s.sublabel)
+	{
+		uint8_t size = 1;
+		int16_t textW = (int16_t)strlen(s.sublabel) * 6 * size;
+		tft.setTextSize(size);
+		tft.setTextColor(fg, fill);
+		tft.setCursor(left + (width - textW) / 2, top + ACTION_BAR_HEIGHT - 12);
+		tft.print(s.sublabel);
 	}
 }
 
+void drawTitleBack(bool present, bool pressed)
+{
+	if (!present)
+		return;
+	uint16_t fill = pressed ? TFT_YELLOW : TFT_NAVY;
+	uint16_t fg = pressed ? TFT_BLACK : TFT_WHITE;
+	tft.fillRect(0, 0, ACTION_TITLE_BACK_WIDTH, ACTION_HEADER_HEIGHT, fill);
+	tft.setTextSize(2);
+	tft.setTextColor(fg, fill);
+	tft.setCursor(8, 7);
+	tft.print('<');
+}
+
+void renderActionBar(bool force)
+{
+	int16_t top = tftHeight - ACTION_BAR_HEIGHT;
+	if (currentActionBar.count == 0)
+	{
+		if (force || renderedActionBar.count != 0)
+		{
+			tft.fillRect(0, top, tftWidth, ACTION_BAR_HEIGHT, TFT_BLACK);
+			renderedActionBar.count = 0;
+			renderedPressedSlot = -1;
+		}
+		return;
+	}
+
+	bool layoutChanged = force || renderedActionBar.count != currentActionBar.count;
+	if (layoutChanged)
+		tft.fillRect(0, top, tftWidth, ACTION_BAR_HEIGHT, TFT_BLACK);
+
+	for (uint8_t i = 0; i < currentActionBar.count; i++)
+	{
+		bool slotChanged = layoutChanged || !actionSlotsEqual(currentActionBar.slots[i], renderedActionBar.slots[i]);
+		bool pressedChanged = (renderedPressedSlot == (int8_t)i) != (pressedSlot == (int8_t)i);
+		if (slotChanged || pressedChanged)
+			drawActionSlot(i, pressedSlot == (int8_t)i);
+	}
+	renderedActionBar = currentActionBar;
+	renderedPressedSlot = pressedSlot;
+}
+
+void setActionBar(const ActionBar &bar, bool hasBack)
+{
+	// If layout changes mid-press, cancel the press to avoid stale state.
+	if (pressedSlot >= 0)
+	{
+		bool changed = bar.count != currentActionBar.count;
+		if (!changed && pressedSlot < (int8_t)bar.count)
+			changed = !actionSlotsEqual(bar.slots[pressedSlot], currentActionBar.slots[pressedSlot]);
+		if (changed)
+			pressedSlot = -1;
+	}
+	if (pressedTitleBack && !hasBack)
+		pressedTitleBack = false;
+	currentActionBar = bar;
+	currentScreenHasBack = hasBack;
+	renderActionBar(false);
+	if (hasBack != renderedHasBack)
+	{
+		drawTitleBack(hasBack, pressedTitleBack);
+		if (!hasBack)
+			tft.fillRect(0, 0, ACTION_TITLE_BACK_WIDTH, ACTION_HEADER_HEIGHT, TFT_NAVY);
+		renderedHasBack = hasBack;
+	}
+}
+
+// Bar layout helpers ------------------------------------------------------
+static ActionBar makeBar2(ActionSlot a, ActionSlot b)
+{
+	ActionBar bar = {2, {a, b}};
+	return bar;
+}
+static ActionBar makeBar3(ActionSlot a, ActionSlot b, ActionSlot c)
+{
+	ActionBar bar = {3, {a, b, c}};
+	return bar;
+}
+static ActionBar makeBar4(ActionSlot a, ActionSlot b, ActionSlot c, ActionSlot d)
+{
+	ActionBar bar = {4, {a, b, c, d}};
+	return bar;
+}
+static ActionBar makeBar5(ActionSlot a, ActionSlot b, ActionSlot c, ActionSlot d, ActionSlot e)
+{
+	ActionBar bar = {5, {a, b, c, d, e}};
+	return bar;
+}
+static ActionBar makeBar1(ActionSlot a)
+{
+	ActionBar bar = {1, {a}};
+	return bar;
+}
+static ActionBar makeBarEmpty()
+{
+	ActionBar bar = {0, {}};
+	return bar;
+}
+
+// ----- Screen frame helpers ---------------------------------------------
 // Returns true the first time a screen frame is drawn (i.e. when the title
 // has changed since the last call). Callers can use this to know whether
 // a full redraw of body content is needed; when false the chrome (controls
 // bar + header bar) is already on-screen and content can be partially
 // refreshed without flicker.
-bool beginScreen(const __FlashStringHelper *title)
+bool beginScreen(const __FlashStringHelper *title, bool hasBack = false)
 {
 	if (lastScreenFrameKey != title)
 	{
-		if (!controlsVisible)
-		{
-			drawControls();
-			controlsVisible = true;
-		}
-		tft.fillRect(0, 0, tftWidth, tftHeight - TOUCH_BUTTON_BAR_HEIGHT, TFT_BLACK);
-		tft.fillRect(0, 0, tftWidth, 28, TFT_NAVY);
+		// Clear only the body strip (below the header). The header row is
+		// painted with TFT_NAVY immediately after, so clearing it to black
+		// first would be wasted work and contributes to the visible
+		// scan-line during screen transitions.
+		tft.fillRect(0, ACTION_HEADER_HEIGHT, tftWidth,
+			tftHeight - ACTION_BAR_HEIGHT - ACTION_HEADER_HEIGHT, TFT_BLACK);
+		tft.fillRect(0, 0, tftWidth, ACTION_HEADER_HEIGHT, TFT_NAVY);
 		tft.setTextSize(2);
 		tft.setTextColor(TFT_WHITE, TFT_NAVY);
-		tft.setCursor(8, 7);
+		tft.setCursor(hasBack ? (ACTION_TITLE_BACK_WIDTH + 8) : 8, 7);
 		tft.print(title);
 		lastScreenFrameKey = title;
+		renderedHasBack = false; // force back glyph re-paint after header redraw
 		return true;
 	}
 	return false;
 }
 
-bool beginScreenP(PGM_P title)
+bool beginScreenP(PGM_P title, bool hasBack = false)
 {
 	if (lastScreenFrameKey != title)
 	{
-		if (!controlsVisible)
-		{
-			drawControls();
-			controlsVisible = true;
-		}
-		tft.fillRect(0, 0, tftWidth, tftHeight - TOUCH_BUTTON_BAR_HEIGHT, TFT_BLACK);
-		tft.fillRect(0, 0, tftWidth, 28, TFT_NAVY);
+		tft.fillRect(0, ACTION_HEADER_HEIGHT, tftWidth,
+			tftHeight - ACTION_BAR_HEIGHT - ACTION_HEADER_HEIGHT, TFT_BLACK);
+		tft.fillRect(0, 0, tftWidth, ACTION_HEADER_HEIGHT, TFT_NAVY);
 		tft.setTextSize(2);
 		tft.setTextColor(TFT_WHITE, TFT_NAVY);
-		tft.setCursor(8, 7);
+		tft.setCursor(hasBack ? (ACTION_TITLE_BACK_WIDTH + 8) : 8, 7);
 		printProgmem(title);
 		lastScreenFrameKey = title;
+		renderedHasBack = false;
 		return true;
 	}
 	return false;
 }
 
-// Chromeless screen variant for the startup splash and info screens. Just
-// clears the display and tracks the frame key so a re-entry does not blink.
-// frameKey must be a stable pointer (typically the address of a function or
-// PROGMEM string) that is unique to this screen.
+// Chromeless screen variant for the startup splash. Just clears the display
+// and tracks the frame key so a re-entry does not blink. frameKey must be a
+// stable pointer (typically the address of a function or PROGMEM string).
 bool beginCleanScreen(const void *frameKey)
 {
 	if (lastScreenFrameKey != frameKey)
 	{
 		tft.fillScreen(TFT_BLACK);
 		lastScreenFrameKey = frameKey;
-		controlsVisible = false;
+		renderedHasBack = false;
+		renderedActionBar.count = 0xFF; // force redraw next time bar is set
 		return true;
 	}
 	return false;
@@ -709,7 +944,7 @@ static void renderValueScreenBody(bool fullFrame, const char *value, uint8_t cur
 		tft.fillRect(18, 78, tftWidth - 36, 24, TFT_BLACK);
 		tft.fillRect(18, 106, tftWidth - 36, 4, TFT_BLACK);
 		tft.fillRect(18, 138, tftWidth - 36, 10, TFT_BLACK);
-		printAt(18, 138, 1, TFT_CYAN, F("< > Stelle   UP/DN Wert   OK"));
+		printAt(18, 138, 1, TFT_CYAN, F("< > Stelle   +/- Wert   OK"));
 		for (uint8_t i = 0; i < sizeof(lastValue); i++)
 			lastValue[i] = '\0';
 		lastCursorColumn = 0xFF;
@@ -757,15 +992,15 @@ static void renderValueScreenBody(bool fullFrame, const char *value, uint8_t cur
 	}
 }
 
-void drawValueScreen(const __FlashStringHelper *title, const char *value, uint8_t cursorColumn, bool cursorVisible)
+void drawValueScreen(const __FlashStringHelper *title, const char *value, uint8_t cursorColumn, bool cursorVisible, bool hasBack = false)
 {
-	bool fullFrame = beginScreen(title);
+	bool fullFrame = beginScreen(title, hasBack);
 	renderValueScreenBody(fullFrame, value, cursorColumn, cursorVisible);
 }
 
-void drawValueScreenP(PGM_P title, const char *value, uint8_t cursorColumn, bool cursorVisible)
+void drawValueScreenP(PGM_P title, const char *value, uint8_t cursorColumn, bool cursorVisible, bool hasBack = false)
 {
-	bool fullFrame = beginScreenP(title);
+	bool fullFrame = beginScreenP(title, hasBack);
 	renderValueScreenBody(fullFrame, value, cursorColumn, cursorVisible);
 }
 
@@ -783,6 +1018,7 @@ enum Button
 	BUTTON_DOWN,
 	BUTTON_LEFT,
 	BUTTON_SELECT,
+	BUTTON_BACK,
 	BUTTON_NONE
 };
 
@@ -848,6 +1084,15 @@ uint32_t syringeCentiMl = DEFAULT_SYRINGE_CENTI_ML;
 bool motorDirectionInverted = INVERTDIRECTION;
 bool bolusEnabled = DEFAULT_BOLUS_ENABLED == 1;
 bool soundEnabled = DEFAULT_SOUND_ENABLED == 1;
+bool testModeEnabled = false;
+bool pressureMonitorEnabled = true;
+uint8_t pressureScale = PRESSURE_SCALE_DEFAULT;
+uint8_t pressureAlarmLevel = PRESSURE_ALARM_DEFAULT;
+uint16_t pressureBaseline = PRESSURE_BASELINE_DEFAULT;
+uint16_t pressureCurrentSg = PRESSURE_SG_MAX;
+uint8_t pressureCurrentBarPercent = 0;
+uint8_t pressureHighTicks = 0;
+uint32_t pressureLastAlarmBeepMillis = 0;
 uint8_t maxBolusPercent = DEFAULT_MAX_BOLUS_PERCENT;
 uint8_t startupJogSpeedPercent = DEFAULT_STARTUP_JOG_SPEED_PERCENT;
 bool bolusActive = false;
@@ -898,7 +1143,6 @@ bool alarmActive = false;
 bool statusRequiresAcknowledge = false;
 uint32_t statusUntilMillis = 0;
 UiScreen statusReturnScreen = SCREEN_MAIN_MENU;
-char infusionConfirmDetail[65];
 
 struct BuzzerBeep
 {
@@ -1010,6 +1254,7 @@ bool calculateBolusPlan(float *plannedFlowMlPerHour, uint32_t *plannedDurationMi
 bool startBolus();
 void updateBolusState();
 bool applyFlowRate(float nextFlowMlPerHour);
+bool changeRunningInfusionRate(int8_t deltaSteps);
 void beep(uint16_t delayOn = 15, uint16_t delayOff = 80, bool force = false);
 void updateBuzzer();
 void cancelBuzzerBeeps();
@@ -1066,6 +1311,11 @@ bool validSyringeCenti(uint32_t value);
 bool validMotorDirectionInverted(uint8_t value);
 bool validBolusEnabled(uint8_t value);
 bool validSoundEnabled(uint8_t value);
+bool validTestModeEnabled(uint8_t value);
+bool validPressureMonitorEnabled(uint8_t value);
+bool validPressureScale(uint8_t value);
+bool validPressureAlarmLevel(uint8_t value);
+bool validPressureBaseline(uint16_t value);
 bool validMaxBolusPercent(uint8_t value);
 bool validStartupJogSpeedPercent(uint8_t value);
 void applyDeliveryCenti(uint32_t value);
@@ -1073,18 +1323,30 @@ void applySyringeCenti(uint32_t value);
 void applyMotorDirectionInverted(uint8_t value);
 void applyBolusEnabled(uint8_t value);
 void applySoundEnabled(uint8_t value);
+void applyTestModeEnabled(uint8_t value);
+void applyPressureMonitorEnabled(uint8_t value);
+void applyPressureScale(uint8_t value);
+void applyPressureAlarmLevel(uint8_t value);
+void applyPressureBaseline(uint16_t value);
 void applyMaxBolusPercent(uint8_t value);
 void applyStartupJogSpeedPercent(uint8_t value);
 uint16_t settingsCrc16Bytes(const uint8_t *bytes, uint8_t byteCount);
 uint16_t settingsCrc16(const PersistedSettings *settings);
 bool settingsCrcMatches(const PersistedSettings *settings);
+bool settingsVersion8CrcMatches(const PersistedSettingsVersion8 *settings);
+bool settingsVersion7CrcMatches(const PersistedSettingsVersion7 *settings);
 bool settingsVersion6CrcMatches(const PersistedSettingsVersion6 *settings);
 uint8_t readEepromByte(uint16_t address);
 void waitForEepromReady();
 void updateEepromByte(uint16_t address, uint8_t value);
 void readPersistentSettingsVersion6(PersistedSettingsVersion6 *settings);
+void readPersistentSettingsVersion7(PersistedSettingsVersion7 *settings);
+void readPersistentSettingsVersion8(PersistedSettingsVersion8 *settings);
 void readPersistentSettings(PersistedSettings *settings);
 void writePersistentSettings(const PersistedSettings *settings);
+uint16_t readPressureSg();
+uint8_t pressurePercentFromSg(uint16_t sg);
+void calibratePressureBaseline();
 
 void setup()
 {
@@ -1196,13 +1458,37 @@ void loop()
 RawTouch readTouch()
 {
 	RawTouch raw = {readTouchAxisX(), readTouchAxisY(), readTouchPressure()};
+	if (raw.z >= TOUCH_MIN_PRESSURE && raw.z <= TOUCH_MAX_PRESSURE)
+	{
+		RawTouch confirm = {readTouchAxisX(), readTouchAxisY(), readTouchPressure()};
+		if (abs(raw.x - confirm.x) <= TOUCH_STABLE_RAW_DELTA &&
+			abs(raw.y - confirm.y) <= TOUCH_STABLE_RAW_DELTA &&
+			abs(raw.z - confirm.z) <= TOUCH_STABLE_PRESSURE_DELTA)
+		{
+			raw.x = (int16_t)((raw.x + confirm.x) / 2);
+			raw.y = (int16_t)((raw.y + confirm.y) / 2);
+			raw.z = (int16_t)((raw.z + confirm.z) / 2);
+		}
+		else
+		{
+			raw.x = 0;
+			raw.y = 0;
+			raw.z = 0;
+		}
+	}
 	restoreTouchSharedPins();
 	return raw;
 }
 
 bool isPressed(const RawTouch &point)
 {
-	return point.z >= TOUCH_MIN_PRESSURE && point.z <= TOUCH_MAX_PRESSURE;
+	int16_t rawMinX = min(TS_RAW_TOP_LEFT_X, TS_RAW_TOP_RIGHT_X) - TOUCH_RAW_MARGIN;
+	int16_t rawMaxX = max(TS_RAW_BOTTOM_LEFT_X, TS_RAW_BOTTOM_RIGHT_X) + TOUCH_RAW_MARGIN;
+	int16_t rawMinY = min(TS_RAW_TOP_LEFT_Y, TS_RAW_BOTTOM_LEFT_Y) - TOUCH_RAW_MARGIN;
+	int16_t rawMaxY = max(TS_RAW_TOP_RIGHT_Y, TS_RAW_BOTTOM_RIGHT_Y) + TOUCH_RAW_MARGIN;
+	return point.z >= TOUCH_MIN_PRESSURE && point.z <= TOUCH_MAX_PRESSURE &&
+		point.x >= rawMinX && point.x <= rawMaxX &&
+		point.y >= rawMinY && point.y <= rawMaxY;
 }
 
 int16_t readTouchAxisX()
@@ -1317,23 +1603,42 @@ int16_t mapTouchY(const RawTouch &point)
 
 Button buttonFromTouch(int16_t x, int16_t y)
 {
-	if (y < (int16_t)tftHeight - TOUCH_BUTTON_BAR_HEIGHT)
+	// Title-bar BACK zone (only honoured if the current screen advertises a
+	// back action).
+	if (currentScreenHasBack && y < ACTION_HEADER_HEIGHT && x < ACTION_TITLE_BACK_WIDTH)
+		return BUTTON_BACK;
+
+	if (currentActionBar.count == 0)
+		return BUTTON_NONE;
+	if (y < (int16_t)tftHeight - ACTION_BAR_HEIGHT)
 		return BUTTON_NONE;
 
-	uint8_t zone = (uint32_t)x * 5UL / tftWidth;
-	switch (zone)
-	{
-	case 0:
-		return BUTTON_LEFT;
-	case 1:
-		return BUTTON_UP;
-	case 2:
-		return BUTTON_SELECT;
-	case 3:
-		return BUTTON_DOWN;
-	default:
-		return BUTTON_RIGHT;
-	}
+	uint8_t n = currentActionBar.count;
+	int16_t slotW = tftWidth / n;
+	int16_t slot = x / slotW;
+	if (slot < 0)
+		slot = 0;
+	if (slot >= (int16_t)n)
+		slot = n - 1;
+	return (Button)currentActionBar.slots[slot].action;
+}
+
+// Maps a touch coordinate to the action-bar slot index, or -1 if not on the
+// bar. Used by the touch state machine for visual feedback.
+static int8_t slotIndexFromTouch(int16_t x, int16_t y)
+{
+	if (currentActionBar.count == 0)
+		return -1;
+	if (y < (int16_t)tftHeight - ACTION_BAR_HEIGHT)
+		return -1;
+	uint8_t n = currentActionBar.count;
+	int16_t slotW = tftWidth / n;
+	int16_t slot = x / slotW;
+	if (slot < 0)
+		slot = 0;
+	if (slot >= (int16_t)n)
+		slot = n - 1;
+	return (int8_t)slot;
 }
 
 Button readButton()
@@ -1344,34 +1649,179 @@ Button readButton()
 	return buttonFromTouch(mapTouchX(point), mapTouchY(point));
 }
 
+// Drives the action-bar press state machine and emits a Button event for the
+// current loop tick.
+//  * RELEASE mode: emits on touch-up while finger is still inside the slot.
+//  * REPEAT mode: emits on touch-down, then repeats every
+//    ACTION_PRESS_HOLD_REPEAT_MS after ACTION_PRESS_HOLD_INITIAL_MS held.
+//  * HOLD mode: emits every call while finger is on the slot (motor jog).
+// Also handles the optional title-bar BACK touch zone (RELEASE semantics,
+// emitting BUTTON_LEFT).
 Button readButtonPress()
 {
-	static Button lastReading = BUTTON_NONE;
-	static Button reportedButton = BUTTON_NONE;
-	static uint32_t changedAt = 0;
-
-	Button currentReading = readButton();
-	if (currentReading != lastReading)
+	RawTouch point = readTouch();
+	bool touched = isPressed(point);
+	int16_t tx = 0, ty = 0;
+	int8_t slotNow = -1;
+	bool backNow = false;
+	if (touched)
 	{
-		lastReading = currentReading;
-		changedAt = millis();
-		reportedButton = BUTTON_NONE;
+		tx = mapTouchX(point);
+		ty = mapTouchY(point);
+		if (currentScreenHasBack && ty < ACTION_HEADER_HEIGHT && tx < ACTION_TITLE_BACK_WIDTH)
+			backNow = true;
+		else
+			slotNow = slotIndexFromTouch(tx, ty);
+	}
+
+	uint32_t nowMs = millis();
+
+	// --- Title BACK state machine -----------------------------------
+	if (pressedTitleBack)
+	{
+		if (!touched)
+		{
+			drawTitleBack(true, false);
+			pressedTitleBack = false;
+			return BUTTON_BACK;
+		}
+		if (!backNow)
+		{
+			drawTitleBack(true, false);
+			pressedTitleBack = false;
+		}
 		return BUTTON_NONE;
 	}
 
-	if (currentReading == BUTTON_NONE)
+	// --- Action-bar slot state machine ------------------------------
+	if (pressedSlot < 0)
 	{
-		reportedButton = BUTTON_NONE;
+		if (slotNow >= 0)
+		{
+			pressedSlot = slotNow;
+			pressStartMs = nowMs;
+			lastRepeatMs = nowMs;
+			drawActionSlot(pressedSlot, true);
+			renderedPressedSlot = pressedSlot;
+			const ActionSlot &s = currentActionBar.slots[pressedSlot];
+			if (s.mode == ACTION_MODE_REPEAT || s.mode == ACTION_MODE_HOLD)
+				return (Button)s.action;
+			return BUTTON_NONE;
+		}
+		if (backNow)
+		{
+			pressedTitleBack = true;
+			pressStartMs = nowMs;
+			drawTitleBack(true, true);
+		}
 		return BUTTON_NONE;
 	}
 
-	if (reportedButton == BUTTON_NONE && millis() - changedAt >= DEBOUNCE_DELAY_MS)
+	// pressedSlot >= 0
+	const ActionSlot &s = currentActionBar.slots[pressedSlot];
+	if (touched && slotNow == pressedSlot)
 	{
-		reportedButton = currentReading;
-		return currentReading;
+		if (s.mode == ACTION_MODE_HOLD)
+			return (Button)s.action;
+		if (s.mode == ACTION_MODE_REPEAT)
+		{
+			uint32_t held = nowMs - pressStartMs;
+			if (held >= ACTION_PRESS_HOLD_INITIAL_MS && nowMs - lastRepeatMs >= ACTION_PRESS_HOLD_REPEAT_MS)
+			{
+				lastRepeatMs = nowMs;
+				return (Button)s.action;
+			}
+		}
+		return BUTTON_NONE;
 	}
 
+	// Finger left slot (moved off or lifted).
+	bool fireOnRelease = !touched && s.mode == ACTION_MODE_RELEASE;
+	uint8_t releasedAction = s.action;
+	drawActionSlot(pressedSlot, false);
+	pressedSlot = -1;
+	renderedPressedSlot = -1;
+
+	if (fireOnRelease)
+		return (Button)releasedAction;
+
+	// If the user slid onto a different slot, start a fresh press on it.
+	if (touched && slotNow >= 0)
+	{
+		pressedSlot = slotNow;
+		pressStartMs = nowMs;
+		lastRepeatMs = nowMs;
+		drawActionSlot(pressedSlot, true);
+		renderedPressedSlot = pressedSlot;
+		const ActionSlot &s2 = currentActionBar.slots[pressedSlot];
+		if (s2.mode == ACTION_MODE_REPEAT || s2.mode == ACTION_MODE_HOLD)
+			return (Button)s2.action;
+	}
 	return BUTTON_NONE;
+}
+
+// ----- Per-screen action-bar layouts ------------------------------------
+// These are tiny helpers that build the ActionBar struct each call. Slots
+// reuse the existing Button enum so the existing handler dispatch keeps
+// working unchanged.
+static ActionBar menuActionBar()
+{
+	ActionSlot up = {"^", "UP", TFT_NAVY, TFT_WHITE, BUTTON_UP, ACTION_MODE_REPEAT};
+	ActionSlot dn = {"v", "DN", TFT_NAVY, TFT_WHITE, BUTTON_DOWN, ACTION_MODE_REPEAT};
+	ActionSlot ok = {"OK", NULL, TFT_GREEN, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	return makeBar3(up, dn, ok);
+}
+static ActionBar valueEditorActionBar()
+{
+	ActionSlot left = {"<", NULL, TFT_NAVY, TFT_WHITE, BUTTON_LEFT, ACTION_MODE_REPEAT};
+	ActionSlot minus = {"-", NULL, TFT_NAVY, TFT_WHITE, BUTTON_DOWN, ACTION_MODE_REPEAT};
+	ActionSlot ok = {"OK", NULL, TFT_GREEN, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	ActionSlot plus = {"+", NULL, TFT_NAVY, TFT_WHITE, BUTTON_UP, ACTION_MODE_REPEAT};
+	ActionSlot right = {">", NULL, TFT_NAVY, TFT_WHITE, BUTTON_RIGHT, ACTION_MODE_REPEAT};
+	return makeBar5(left, minus, ok, plus, right);
+}
+static ActionBar plusMinusActionBar()
+{
+	// For editors that only step a percentage (max bolus, startup speed).
+	ActionSlot minus = {"-", NULL, TFT_NAVY, TFT_WHITE, BUTTON_DOWN, ACTION_MODE_REPEAT};
+	ActionSlot ok = {"OK", NULL, TFT_GREEN, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	ActionSlot plus = {"+", NULL, TFT_NAVY, TFT_WHITE, BUTTON_UP, ACTION_MODE_REPEAT};
+	return makeBar3(minus, plus, ok);
+}
+static ActionBar confirmActionBar()
+{
+	ActionSlot abort = {"X", "ABBR", TFT_RED, TFT_WHITE, BUTTON_LEFT, ACTION_MODE_RELEASE};
+	ActionSlot go = {"OK", "START", TFT_GREEN, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	return makeBar2(abort, go);
+}
+static ActionBar pumpActionBar(bool withBolus)
+{
+	ActionSlot stop = {"STOP", NULL, TFT_RED, TFT_WHITE, BUTTON_LEFT, ACTION_MODE_RELEASE};
+	ActionSlot slower = {"-", "RATE", TFT_NAVY, TFT_WHITE, BUTTON_DOWN, ACTION_MODE_REPEAT};
+	ActionSlot faster = {"+", "RATE", TFT_NAVY, TFT_WHITE, BUTTON_UP, ACTION_MODE_REPEAT};
+	if (!withBolus)
+		return makeBar3(stop, slower, faster);
+	ActionSlot bolus = {"+", "BOLUS", TFT_NAVY, TFT_WHITE, BUTTON_RIGHT, ACTION_MODE_RELEASE};
+	return makeBar4(stop, slower, faster, bolus);
+}
+static ActionBar ackActionBar(uint16_t color)
+{
+	ActionSlot ok = {"OK", NULL, color, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	return makeBar1(ok);
+}
+static ActionBar motortestActionBar(bool running)
+{
+	ActionSlot zur = {"v", "ZUR", TFT_NAVY, TFT_WHITE, BUTTON_DOWN, ACTION_MODE_RELEASE};
+	ActionSlot toggle = {running ? "STP" : "GO", NULL, running ? TFT_RED : TFT_GREEN, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	ActionSlot vor = {"^", "VOR", TFT_NAVY, TFT_WHITE, BUTTON_UP, ACTION_MODE_RELEASE};
+	return makeBar3(zur, toggle, vor);
+}
+static ActionBar insertSyringeActionBar()
+{
+	ActionSlot jl = {"<", "MOTOR", TFT_NAVY, TFT_WHITE, BUTTON_LEFT, ACTION_MODE_HOLD};
+	ActionSlot jr = {">", "MOTOR", TFT_NAVY, TFT_WHITE, BUTTON_RIGHT, ACTION_MODE_HOLD};
+	ActionSlot ok = {"OK", "WEITER", TFT_GREEN, TFT_WHITE, BUTTON_SELECT, ACTION_MODE_RELEASE};
+	return makeBar3(jl, jr, ok);
 }
 
 void showSplash()
@@ -1382,6 +1832,7 @@ void showSplash()
 		return;
 	printAt(24, 68, 3, TFT_WHITE, F("DIY Syringe Pump"));
 	printAt(60, 120, 2, TFT_CYAN, F("A Flo Project"));
+	setActionBar(makeBarEmpty(), false);
 }
 
 void showInfoScreen()
@@ -1391,16 +1842,17 @@ void showInfoScreen()
 	uint16_t whole = syringeCentiMl / 100;
 	uint8_t fraction = syringeCentiMl % 100;
 	if (whole >= 100)
-		snprintf(syringeLine, sizeof(syringeLine), "Aktuell%03u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
+		snprintf(syringeLine, sizeof(syringeLine), "BBRAUN %03u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
 	else
-		snprintf(syringeLine, sizeof(syringeLine), "Aktuell %02u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
+		snprintf(syringeLine, sizeof(syringeLine), "BBRAUN %02u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
 	bool full = beginScreenP(PROMPT_INFO_LINE_1);
 	if (full)
-		printAt(20, 130, 1, TFT_CYAN, F("OK weiter   UP/DN Motor jog"));
+		printAt(20, 130, 1, TFT_CYAN, F("OK weiter   <  > Motor jog"));
 	// Only repaint the dynamic value line to avoid full-screen flicker when
 	// the user jogs the motor and the syringe volume hint refreshes.
 	tft.fillRect(30, 74, tftWidth - 60, 24, TFT_BLACK);
 	printAtText(30, 74, 3, TFT_WHITE, syringeLine);
+	setActionBar(insertSyringeActionBar(), false);
 }
 
 void updateStartupScreens(Button button)
@@ -1496,7 +1948,7 @@ static const __FlashStringHelper *mainMenuLabel(uint8_t index)
 	switch (index)
 	{
 	case MAIN_MENU_START_INFUSION:
-		return F("Start Infusion");
+		return F("Infusion starten");
 	case MAIN_MENU_LOAD_SYRINGE:
 		return F("Neu einlegen");
 	case MAIN_MENU_SETTINGS:
@@ -1519,7 +1971,7 @@ static const __FlashStringHelper *startMenuLabel(uint8_t index)
 
 void showMainMenu()
 {
-	bool full = beginScreen(F("Main Menu"));
+	bool full = beginScreen(F("Navigation"));
 	static uint8_t lastIndex = 0xFF;
 	if (full || lastIndex >= MAIN_MENU_COUNT)
 	{
@@ -1536,11 +1988,12 @@ void showMainMenu()
 		drawMenuItem(mainMenuIndex, true, mainMenuLabel(mainMenuIndex));
 	}
 	lastIndex = mainMenuIndex;
+	setActionBar(menuActionBar(), false);
 }
 
 void showStartMenu()
 {
-	bool full = beginScreen(F("Start Infusion"));
+	bool full = beginScreen(F("Programmwahl"), true);
 	static uint8_t lastIndex = 0xFF;
 	if (full || lastIndex >= START_MENU_COUNT)
 	{
@@ -1557,11 +2010,12 @@ void showStartMenu()
 		drawMenuItem(startMenuIndex, true, startMenuLabel(startMenuIndex));
 	}
 	lastIndex = startMenuIndex;
+	setActionBar(menuActionBar(), true);
 }
 
 void showSettingsMenu()
 {
-	bool full = beginScreen(F("Einstellungen"));
+	bool full = beginScreen(F("Einstellungen"), true);
 	uint8_t firstIndex = 0;
 	if (settingsMenuIndex > 1)
 		firstIndex = settingsMenuIndex - 1;
@@ -1588,6 +2042,7 @@ void showSettingsMenu()
 	}
 	lastIndex = settingsMenuIndex;
 	lastFirstIndex = firstIndex;
+	setActionBar(menuActionBar(), true);
 }
 
 void printSettingsMenuItem(uint8_t itemIndex, bool selected)
@@ -1625,6 +2080,29 @@ void printSettingsMenuItem(uint8_t itemIndex, bool selected)
 		tft.print(valueLine);
 		break;
 	}
+	case SETTINGS_MENU_TEST_MODE:
+		tft.print(testModeEnabled ? F("Test Mode: AN") : F("Test Mode: AUS"));
+		break;
+	case SETTINGS_MENU_PRESSURE:
+		tft.print(pressureMonitorEnabled ? F("Druck: AN") : F("Druck: AUS"));
+		break;
+	case SETTINGS_MENU_PRESSURE_SCALE:
+	{
+		char valueLine[17];
+		snprintf(valueLine, sizeof(valueLine), "Druck-Skala:%02u", (unsigned int)pressureScale);
+		tft.print(valueLine);
+		break;
+	}
+	case SETTINGS_MENU_PRESSURE_ALARM:
+	{
+		char valueLine[17];
+		snprintf(valueLine, sizeof(valueLine), "Druck-Alarm:%02u", (unsigned int)pressureAlarmLevel);
+		tft.print(valueLine);
+		break;
+	}
+	case SETTINGS_MENU_PRESSURE_ZERO:
+		tft.print(F("Druck nullen"));
+		break;
 	case SETTINGS_MENU_MOTOR_TEST:
 		tft.print(F("Motortest"));
 		break;
@@ -1773,7 +2251,8 @@ void showRateEditor()
 	uint8_t fraction = editRateCentiMlPerHour % 100;
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%03u.%02u ml/h", (unsigned int)whole, (unsigned int)fraction);
-	drawValueScreenP(PROMPT_RATE, valueLine, editCursorColumn(), true);
+	drawValueScreenP(PROMPT_RATE, valueLine, editCursorColumn(), true, true);
+	setActionBar(valueEditorActionBar(), true);
 }
 
 void showVolumeEditor()
@@ -1782,7 +2261,8 @@ void showVolumeEditor()
 	uint8_t fraction = editVolumeCentiMl % 100;
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%03u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
-	drawValueScreenP(PROMPT_VOLUME, valueLine, editCursorColumn(), true);
+	drawValueScreenP(PROMPT_VOLUME, valueLine, editCursorColumn(), true, true);
+	setActionBar(valueEditorActionBar(), true);
 }
 
 void showTimeEditor()
@@ -1792,7 +2272,8 @@ void showTimeEditor()
 	uint8_t seconds = editTimeSeconds % 60;
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%02u:%02u:%02u H/M/S", (unsigned int)hours, (unsigned int)minutes, (unsigned int)seconds);
-	drawValueScreenP(PROMPT_TIME, valueLine, editCursorColumn(), true);
+	drawValueScreenP(PROMPT_TIME, valueLine, editCursorColumn(), true, true);
+	setActionBar(valueEditorActionBar(), true);
 }
 
 void showDeliveryEditor()
@@ -1801,7 +2282,8 @@ void showDeliveryEditor()
 	uint8_t fraction = editDeliveryCentiMlPerCm % 100;
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%03u.%02u ml/cm", (unsigned int)whole, (unsigned int)fraction);
-	drawValueScreenP(PROMPT_DELIVERY, valueLine, editCursorColumn(), true);
+	drawValueScreenP(PROMPT_DELIVERY, valueLine, editCursorColumn(), true, true);
+	setActionBar(valueEditorActionBar(), true);
 }
 
 void showSyringeEditor()
@@ -1810,25 +2292,28 @@ void showSyringeEditor()
 	uint8_t fraction = editSyringeCentiMl % 100;
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%03u.%02u ml", (unsigned int)whole, (unsigned int)fraction);
-	drawValueScreenP(PROMPT_SYRINGE, valueLine, editCursorColumn(), true);
+	drawValueScreenP(PROMPT_SYRINGE, valueLine, editCursorColumn(), true, true);
+	setActionBar(valueEditorActionBar(), true);
 }
 
 void showMaxBolusEditor()
 {
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%02u %% Spritze", (unsigned int)editMaxBolusPercent);
-	beginScreen(F("Max Bolus"));
+	beginScreen(F("Max Bolus"), true);
 	printAtText(38, 78, 3, TFT_WHITE, valueLine);
-	printAt(34, 138, 1, TFT_CYAN, F("UP/DN anpassen   OK speichern"));
+	printAt(34, 138, 1, TFT_CYAN, F("- / + anpassen   OK speichern"));
+	setActionBar(plusMinusActionBar(), true);
 }
 
 void showStartupMotorSpeedEditor()
 {
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "%03u %%", (unsigned int)editStartupJogSpeedPercent);
-	beginScreen(F("Motorspeed"));
+	beginScreen(F("Motorspeed"), true);
 	printAtText(88, 78, 3, TFT_WHITE, valueLine);
-	printAt(34, 138, 1, TFT_CYAN, F("UP/DN anpassen   OK speichern"));
+	printAt(34, 138, 1, TFT_CYAN, F("- / + anpassen   OK speichern"));
+	setActionBar(plusMinusActionBar(), true);
 }
 
 void showSettingsSupportScreen()
@@ -1837,16 +2322,18 @@ void showSettingsSupportScreen()
 	snprintf(line1, sizeof(line1), "Test %s %s",
 		motorTestDirectionForward ? "VOR" : "ZUR",
 		motorTestRunning ? "AN" : "AUS");
-	beginScreen(F("Motortest"));
+	beginScreen(F("Motortest"), true);
 	printAtText(36, 72, 3, TFT_WHITE, line1);
-	printAt(18, 128, 1, TFT_CYAN, F("OK Start/Stop   UP Vor   DN Zur   < Zurueck"));
+	printAt(28, 128, 1, TFT_CYAN, F("GO/STP   ^ Vor   v Zur   < Zurueck"));
+	setActionBar(motortestActionBar(motorTestRunning), true);
 }
 
 void showSupportInfoScreen()
 {
-	beginScreen(F("Support"));
+	beginScreen(F("Support"), true);
 	printAtText(40, 72, 3, TFT_WHITE, SUPPORT_DISPLAY_LINE_1);
 	printAtText(40, 112, 3, TFT_CYAN, SUPPORT_DISPLAY_LINE_2);
+	setActionBar(ackActionBar(TFT_GREEN), false);
 }
 
 void showBolusEditor()
@@ -1855,7 +2342,8 @@ void showBolusEditor()
 	uint8_t fraction = editBolusCentiMl % 100;
 	char valueLine[17];
 	snprintf(valueLine, sizeof(valueLine), "Bolus ml: %02u.%02u", (unsigned int)whole, (unsigned int)fraction);
-	drawValueScreen(F("Manueller Bolus"), valueLine, editCursorColumn(), true);
+	drawValueScreen(F("Manueller Bolus"), valueLine, editCursorColumn(), true, true);
+	setActionBar(valueEditorActionBar(), true);
 	lastDisplayMillis = millis();
 }
 
@@ -1871,32 +2359,31 @@ void showBolusConfirm()
 	beginScreen(F("Bolus"));
 	printAtText(34, 66, 3, TFT_WHITE, flowLine);
 	printAtText(58, 112, 3, TFT_CYAN, timeLine);
-	printAt(36, 154, 1, TFT_YELLOW, F("OK starten   < abbrechen"));
+	setActionBar(confirmActionBar(), false);
 	lastDisplayMillis = millis();
 }
 
 void showInfusionConfirm()
 {
 	char rateText[8];
+	char syringeLine[32];
+	char rateLine[54];
 	uint16_t syringeWholeMl = syringeCentiMl / 100UL;
 	uint32_t centiFlow = (uint32_t)(flowMlPerHour * 100.0 + 0.5);
 	snprintf(rateText, sizeof(rateText), "%u.%02u", (unsigned int)(centiFlow / 100UL), (unsigned int)(centiFlow % 100UL));
+	uint32_t durationSeconds = pendingInfusionTargetVolumeEnabled
+		? targetTimeSeconds
+		: (flowMlPerHour > 0.0 ? (uint32_t)(((float)syringeCentiMl / 100.0) * 3600.0 / flowMlPerHour + 0.5) : 0UL);
+	uint32_t durationMinutes = (durationSeconds + 30UL) / 60UL;
 
-	if (pendingInfusionTargetVolumeEnabled)
-	{
-		uint32_t durationMinutes = (targetTimeSeconds + 30UL) / 60UL;
-		snprintf(infusionConfirmDetail, sizeof(infusionConfirmDetail), "Spritze: %uml, Rate: %s ml/h, Dauer: %lumin",
-			(unsigned int)syringeWholeMl, rateText, (unsigned long)durationMinutes);
-	}
-	else
-	{
-		snprintf(infusionConfirmDetail, sizeof(infusionConfirmDetail), "Spritze: %uml, Rate: %s ml/h, Bis Ende",
-			(unsigned int)syringeWholeMl, rateText);
-	}
+	snprintf(syringeLine, sizeof(syringeLine), "Eingelegte Spritze: %uml", (unsigned int)syringeWholeMl);
+	snprintf(rateLine, sizeof(rateLine), "Infusionsrate: %s ml/h, Dauer: %lu min", rateText, (unsigned long)durationMinutes);
 
 	beginScreen(F("Abgabe starten?"));
-	printAtText(12, 62, 1, TFT_WHITE, infusionConfirmDetail);
-	printAt(38, 132, 1, TFT_YELLOW, F("OK starten   < abbrechen"));
+	tft.fillRect(12, 56, tftWidth - 24, 42, TFT_BLACK);
+	printAtText(12, 58, 1, TFT_WHITE, syringeLine);
+	printAtText(12, 78, 1, TFT_WHITE, rateLine);
+	setActionBar(confirmActionBar(), false);
 	lastDisplayMillis = millis();
 }
 
@@ -1907,6 +2394,38 @@ void showIdleScreen()
 
 void showPumpScreen()
 {
+	// Cached per-character state so subsequent ticks only repaint the
+	// digit/character cells that actually changed. Painting with
+	// setTextColor(fg, bg) atomically overwrites the previous glyph cell,
+	// so we never need to clear the body region between ticks - that full
+	// clear was the cause of the visible flicker in the middle of the
+	// screen on every update.
+	static char lastFlowText[8] = {0};
+	static char lastLineText[24] = {0};
+	static bool pumpCacheValid = false;
+	// Pressure bar cache (diff render). 0xFFFF == cache invalid.
+	static uint16_t lastPressureFillPx = 0xFFFF;
+	static uint16_t lastPressureColor = 0;
+	static bool lastPressureBarVisible = false;
+
+	bool fullFrame = beginScreen(F("Infusion laeuft"));
+	if (fullFrame || !pumpCacheValid)
+	{
+		// First paint on this screen frame: clear the body region exactly
+		// once and draw the static "Rate ml/h" label. Invalidate the
+		// character caches so every glyph is forced to repaint below.
+		tft.fillRect(16, 52, tftWidth - 32, 116, TFT_BLACK);
+		printAt(16, 52, 2, TFT_CYAN, F("Rate ml/h"));
+		for (uint8_t i = 0; i < sizeof(lastFlowText); i++)
+			lastFlowText[i] = '\0';
+		for (uint8_t i = 0; i < sizeof(lastLineText); i++)
+			lastLineText[i] = '\0';
+		lastPressureFillPx = 0xFFFF;
+		lastPressureColor = 0;
+		lastPressureBarVisible = false;
+		pumpCacheValid = true;
+	}
+
 	lastDisplayMillis = millis();
 
 	char flowText[8];
@@ -1941,12 +2460,148 @@ void showPumpScreen()
 			snprintf(volumeText, sizeof(volumeText), "%03u.%02u", (unsigned int)pumpedWholeMl, (unsigned int)pumpedFractionMl);
 		snprintf(lineText, sizeof(lineText), "%s  %s ml", elapsedText, volumeText);
 	}
-	beginScreen(F("Infusion laeuft"));
-	tft.fillRect(16, 52, tftWidth - 32, 96, TFT_BLACK);
-	printAt(16, 52, 2, TFT_CYAN, F("Rate ml/h"));
-	printAtText(16, 78, 4, TFT_WHITE, flowText);
-	printAtText(16, 124, 2, TFT_YELLOW, lineText);
-	printAt(16, 154, 1, TFT_CYAN, F("< Stop   OK Bolus"));
+
+	// Per-character diff for the flow rate "XXX.XX" at text size 4 (24px
+	// wide cells). Drawing the same cell with setTextColor(fg, bg) repaints
+	// the background, so unchanged digits are simply skipped.
+	const uint8_t flowColumns = 6; // "NNN.NN"
+	tft.setTextSize(4);
+	tft.setTextColor(TFT_WHITE, TFT_BLACK);
+	for (uint8_t c = 0; c < flowColumns; c++)
+	{
+		char newCh = c < (uint8_t)strlen(flowText) ? flowText[c] : ' ';
+		if (lastFlowText[c] != newCh)
+		{
+			tft.setCursor(16 + (int16_t)c * 24, 78);
+			tft.write((uint8_t)newCh);
+			lastFlowText[c] = newCh;
+		}
+	}
+
+	// Per-character diff for the status line at text size 2 (12px cells).
+	// Pad with spaces past the new length so old trailing characters from
+	// a longer previous line (e.g. mode switch) are erased cleanly.
+	const uint8_t lineColumns = 23; // fits within tftWidth - 32 at size 2
+	uint8_t lineLen = (uint8_t)strlen(lineText);
+	if (lineLen > lineColumns)
+		lineLen = lineColumns;
+	tft.setTextSize(2);
+	tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+	for (uint8_t c = 0; c < lineColumns; c++)
+	{
+		char newCh = c < lineLen ? lineText[c] : ' ';
+		if (lastLineText[c] != newCh)
+		{
+			tft.setCursor(16 + (int16_t)c * 12, 124);
+			tft.write((uint8_t)newCh);
+			lastLineText[c] = newCh;
+		}
+	}
+
+	// --- Pressure bar (StallGuard4 load indicator) -----------------------
+	// Bar geometry: x=16, y=148, full body width, 18 px high. Inner fill
+	// area is inset by 1 px so the dark-grey border stays intact between
+	// frames and we only need to repaint the changed portion of the fill.
+	const int16_t pressureBarX = 16;
+	const int16_t pressureBarY = 148;
+	const int16_t pressureBarW = (int16_t)(tftWidth - 32);
+	const int16_t pressureBarH = 18;
+	const int16_t pressureFillX = pressureBarX + 1;
+	const int16_t pressureFillY = pressureBarY + 1;
+	const int16_t pressureFillW = pressureBarW - 2;
+	const int16_t pressureFillH = pressureBarH - 2;
+
+	if (pressureMonitorEnabled)
+	{
+		uint16_t sg = readPressureSg();
+		pressureCurrentSg = sg;
+		uint8_t percent = pressurePercentFromSg(sg);
+		pressureCurrentBarPercent = percent;
+
+		// Choose fill color from the visual scale level. Yellow above
+		// ~60% and red once the user-configured alarm level (1..10) is
+		// reached.
+		uint8_t alarmPercent = (uint8_t)((uint16_t)pressureAlarmLevel * 10U);
+		uint16_t fillColor = TFT_GREEN;
+		if (percent >= alarmPercent)
+			fillColor = TFT_RED;
+		else if (percent >= 60)
+			fillColor = TFT_YELLOW;
+
+		int16_t fillPx = (int16_t)(((int32_t)pressureFillW * (int32_t)percent) / 100);
+		if (fillPx < 0)
+			fillPx = 0;
+		if (fillPx > pressureFillW)
+			fillPx = pressureFillW;
+
+		bool needBorder = !lastPressureBarVisible;
+		if (needBorder)
+			tft.drawRect(pressureBarX, pressureBarY, pressureBarW, pressureBarH, TFT_DARKGREY);
+
+		if (needBorder || lastPressureColor != fillColor)
+		{
+			// Color changed or first paint -> repaint entire filled
+			// portion and clear the unfilled remainder.
+			if (fillPx > 0)
+				tft.fillRect(pressureFillX, pressureFillY, fillPx, pressureFillH, fillColor);
+			if (fillPx < pressureFillW)
+				tft.fillRect(pressureFillX + fillPx, pressureFillY,
+					pressureFillW - fillPx, pressureFillH, TFT_BLACK);
+		}
+		else if ((uint16_t)fillPx != lastPressureFillPx)
+		{
+			// Same color, only the fill length changed -> paint only the
+			// delta segment so the bar grows/shrinks without flicker.
+			if ((uint16_t)fillPx > lastPressureFillPx)
+			{
+				tft.fillRect(pressureFillX + (int16_t)lastPressureFillPx, pressureFillY,
+					fillPx - (int16_t)lastPressureFillPx, pressureFillH, fillColor);
+			}
+			else
+			{
+				tft.fillRect(pressureFillX + fillPx, pressureFillY,
+					(int16_t)lastPressureFillPx - fillPx, pressureFillH, TFT_BLACK);
+			}
+		}
+
+		lastPressureFillPx = (uint16_t)fillPx;
+		lastPressureColor = fillColor;
+		lastPressureBarVisible = true;
+
+		// Sustained-high alarm: only beep after several ticks above the
+		// threshold so a single noisy SG sample does not produce a false
+		// alarm. Re-arm by dropping below threshold for one tick.
+		if (percent >= alarmPercent)
+		{
+			if (pressureHighTicks < 0xFF)
+				pressureHighTicks++;
+			if (pressureHighTicks >= PRESSURE_ALARM_SUSTAIN_TICKS)
+			{
+				uint32_t now = millis();
+				if (now - pressureLastAlarmBeepMillis >= 1000UL)
+				{
+					beep(60, 120);
+					pressureLastAlarmBeepMillis = now;
+				}
+			}
+		}
+		else
+		{
+			pressureHighTicks = 0;
+		}
+	}
+	else if (lastPressureBarVisible)
+	{
+		// Monitor was just disabled (or cache invalidated) -> erase any
+		// previously drawn bar so the area stays clean.
+		tft.fillRect(pressureBarX, pressureBarY, pressureBarW, pressureBarH, TFT_BLACK);
+		lastPressureBarVisible = false;
+		lastPressureFillPx = 0xFFFF;
+		lastPressureColor = 0;
+		pressureHighTicks = 0;
+	}
+
+	setActionBar(pumpActionBar(bolusEnabled), false);
 }
 
 void showStatus(const __FlashStringHelper *line1, const __FlashStringHelper *line2)
@@ -1970,6 +2625,7 @@ void showStatus(const __FlashStringHelper *line1, const __FlashStringHelper *lin
 	beginScreen(F("Status"));
 	printAt(20, 70, 3, TFT_WHITE, line1);
 	printAt(20, 116, 2, TFT_CYAN, line2);
+	setActionBar(ackActionBar(TFT_GREEN), false);
 	lastDisplayMillis = millis();
 }
 
@@ -1985,7 +2641,7 @@ void showAcknowledgedStatus(const __FlashStringHelper *line1, const __FlashStrin
 	beginScreen(F("Meldung"));
 	printAt(20, 70, 3, TFT_WHITE, line1);
 	printAt(20, 116, 2, TFT_CYAN, line2);
-	printAt(28, 154, 1, TFT_YELLOW, F("OK bestaetigen"));
+	setActionBar(ackActionBar(TFT_GREEN), false);
 	lastDisplayMillis = millis();
 	beep(200, 100, true);
 	beep(200, 0, true);
@@ -2008,9 +2664,7 @@ void showAlarm(const __FlashStringHelper *line1, const __FlashStringHelper *line
 	tft.setTextSize(2);
 	tft.setCursor(20, 116);
 	tft.print(line2);
-	tft.setTextSize(1);
-	tft.setCursor(28, 154);
-	tft.print(F("OK bestaetigen"));
+	setActionBar(ackActionBar(TFT_YELLOW), false);
 	lastDisplayMillis = millis();
 	beep(300, 0, true);
 	alarmActive = true;
@@ -2085,12 +2739,12 @@ void handleUiButton(Button button)
 
 	if (currentScreen == SCREEN_SETTINGS_SUPPORT)
 	{
-		if (button == BUTTON_LEFT)
+		if (button == BUTTON_LEFT || button == BUTTON_BACK)
 		{
 			stopMotorSelfTest();
-			currentScreen = SCREEN_MAIN_MENU;
+			currentScreen = SCREEN_SETTINGS_MENU;
 			beep(8, 30);
-			showMainMenu();
+			showSettingsMenu();
 		}
 		else if (button == BUTTON_SELECT)
 		{
@@ -2230,7 +2884,7 @@ void handleUiButton(Button button)
 			beep(8, 30);
 			showStartMenu();
 		}
-		else if (button == BUTTON_LEFT)
+		else if (button == BUTTON_LEFT || button == BUTTON_BACK)
 		{
 			currentScreen = SCREEN_MAIN_MENU;
 			beep(8, 30);
@@ -2258,7 +2912,7 @@ void handleUiButton(Button button)
 			beep(8, 30);
 			showSettingsMenu();
 		}
-		else if (button == BUTTON_LEFT)
+		else if (button == BUTTON_LEFT || button == BUTTON_BACK)
 		{
 			currentScreen = SCREEN_MAIN_MENU;
 			beep(8, 30);
@@ -2293,6 +2947,39 @@ void handleUiButton(Button button)
 			}
 			else if (settingsMenuIndex == SETTINGS_MENU_STARTUP_SPEED)
 				beginStartupMotorSpeedEditor();
+			else if (settingsMenuIndex == SETTINGS_MENU_TEST_MODE)
+			{
+				testModeEnabled = !testModeEnabled;
+				savePersistentSettings();
+				showSettingsMenu();
+			}
+			else if (settingsMenuIndex == SETTINGS_MENU_PRESSURE)
+			{
+				pressureMonitorEnabled = !pressureMonitorEnabled;
+				savePersistentSettings();
+				showSettingsMenu();
+			}
+			else if (settingsMenuIndex == SETTINGS_MENU_PRESSURE_SCALE)
+			{
+				pressureScale = pressureScale >= PRESSURE_SCALE_MAX
+					? PRESSURE_SCALE_MIN
+					: (uint8_t)(pressureScale + 1);
+				savePersistentSettings();
+				showSettingsMenu();
+			}
+			else if (settingsMenuIndex == SETTINGS_MENU_PRESSURE_ALARM)
+			{
+				pressureAlarmLevel = pressureAlarmLevel >= PRESSURE_ALARM_MAX
+					? PRESSURE_ALARM_MIN
+					: (uint8_t)(pressureAlarmLevel + 1);
+				savePersistentSettings();
+				showSettingsMenu();
+			}
+			else if (settingsMenuIndex == SETTINGS_MENU_PRESSURE_ZERO)
+			{
+				calibratePressureBaseline();
+				showSettingsMenu();
+			}
 			else if (settingsMenuIndex == SETTINGS_MENU_MOTOR_TEST)
 				beginSettingsSupportScreen();
 			else if (settingsMenuIndex == SETTINGS_MENU_SUPPORT)
@@ -2339,6 +3026,10 @@ void handlePumpButton(Button button)
 
 	if (button == BUTTON_LEFT)
 		stopPump(STOP_MANUAL);
+	else if (button == BUTTON_UP)
+		changeRunningInfusionRate(1);
+	else if (button == BUTTON_DOWN)
+		changeRunningInfusionRate(-1);
 	else if (button == BUTTON_RIGHT)
 	{
 		if (bolusEnabled)
@@ -2363,6 +3054,12 @@ void handleRateEditorButton(Button button)
 		flowMlPerHour = (float)editRateCentiMlPerHour / 100.0;
 		beginInfusionConfirm(false);
 	}
+	else if (button == BUTTON_BACK)
+	{
+		currentScreen = SCREEN_START_MENU;
+		beep(8, 30);
+		showStartMenu();
+	}
 }
 
 void handleVolumeEditorButton(Button button)
@@ -2379,6 +3076,12 @@ void handleVolumeEditorButton(Button button)
 	{
 		targetVolumeMl = (float)editVolumeCentiMl / 100.0;
 		beginTimeEditor();
+	}
+	else if (button == BUTTON_BACK)
+	{
+		currentScreen = SCREEN_START_MENU;
+		beep(8, 30);
+		showStartMenu();
 	}
 }
 
@@ -2402,6 +3105,12 @@ void handleTimeEditorButton(Button button)
 			beginInfusionConfirm(true);
 		}
 	}
+	else if (button == BUTTON_BACK)
+	{
+		currentScreen = SCREEN_EDIT_VOLUME;
+		beep(8, 30);
+		showVolumeEditor();
+	}
 }
 
 void handleDeliveryEditorButton(Button button)
@@ -2418,9 +3127,15 @@ void handleDeliveryEditorButton(Button button)
 	{
 		applyDeliveryCenti(editDeliveryCentiMlPerCm);
 		savePersistentSettings();
-		currentScreen = SCREEN_MAIN_MENU;
+		currentScreen = SCREEN_SETTINGS_MENU;
 		beep(8, 30);
-		showMainMenu();
+		showSettingsMenu();
+	}
+	else if (button == BUTTON_BACK)
+	{
+		currentScreen = SCREEN_SETTINGS_MENU;
+		beep(8, 30);
+		showSettingsMenu();
 	}
 }
 
@@ -2438,9 +3153,15 @@ void handleSyringeEditorButton(Button button)
 	{
 		applySyringeCenti(editSyringeCentiMl);
 		savePersistentSettings();
-		currentScreen = SCREEN_MAIN_MENU;
+		currentScreen = SCREEN_SETTINGS_MENU;
 		beep(8, 30);
-		showMainMenu();
+		showSettingsMenu();
+	}
+	else if (button == BUTTON_BACK)
+	{
+		currentScreen = SCREEN_SETTINGS_MENU;
+		beep(8, 30);
+		showSettingsMenu();
 	}
 }
 
@@ -2450,7 +3171,7 @@ void handleMaxBolusEditorButton(Button button)
 		changeMaxBolusPercent(1);
 	else if (button == BUTTON_DOWN)
 		changeMaxBolusPercent(-1);
-	else if (button == BUTTON_LEFT)
+	else if (button == BUTTON_LEFT || button == BUTTON_BACK)
 	{
 		currentScreen = SCREEN_SETTINGS_MENU;
 		beep(8, 30);
@@ -2460,9 +3181,9 @@ void handleMaxBolusEditorButton(Button button)
 	{
 		applyMaxBolusPercent(editMaxBolusPercent);
 		savePersistentSettings();
-		currentScreen = SCREEN_MAIN_MENU;
+		currentScreen = SCREEN_SETTINGS_MENU;
 		beep(8, 30);
-		showMainMenu();
+		showSettingsMenu();
 	}
 }
 
@@ -2472,7 +3193,7 @@ void handleStartupMotorSpeedEditorButton(Button button)
 		changeStartupMotorSpeedPercent(1);
 	else if (button == BUTTON_DOWN)
 		changeStartupMotorSpeedPercent(-1);
-	else if (button == BUTTON_LEFT)
+	else if (button == BUTTON_LEFT || button == BUTTON_BACK)
 	{
 		currentScreen = SCREEN_SETTINGS_MENU;
 		beep(8, 30);
@@ -2482,9 +3203,9 @@ void handleStartupMotorSpeedEditorButton(Button button)
 	{
 		applyStartupJogSpeedPercent(editStartupJogSpeedPercent);
 		savePersistentSettings();
-		currentScreen = SCREEN_MAIN_MENU;
+		currentScreen = SCREEN_SETTINGS_MENU;
 		beep(8, 30);
-		showMainMenu();
+		showSettingsMenu();
 	}
 }
 
@@ -2509,6 +3230,12 @@ void handleBolusEditorButton(Button button)
 			beep(8, 30);
 			showBolusConfirm();
 		}
+	}
+	else if (button == BUTTON_BACK)
+	{
+		currentScreen = SCREEN_PUMP_RUNNING;
+		beep(8, 30);
+		showPumpScreen();
 	}
 }
 
@@ -2995,6 +3722,42 @@ bool applyFlowRate(float nextFlowMlPerHour)
 	return true;
 }
 
+bool changeRunningInfusionRate(int8_t deltaSteps)
+{
+	if (!pumpRunning || deltaSteps == 0)
+		return false;
+
+	float bolusFlowMlPerHour = bolusActive ? flowMlPerHour - baseInfusionFlowMlPerHour : 0.0;
+	if (bolusFlowMlPerHour < 0.0)
+		bolusFlowMlPerHour = 0.0;
+
+	float nextBaseFlowMlPerHour = baseInfusionFlowMlPerHour + ((float)deltaSteps * FLOW_STEP_ML_PER_HOUR);
+	if (nextBaseFlowMlPerHour < MIN_FLOW_ML_PER_HOUR)
+		nextBaseFlowMlPerHour = MIN_FLOW_ML_PER_HOUR;
+
+	float maxBaseFlowMlPerHour = MAX_FLOW_ML_PER_HOUR - bolusFlowMlPerHour;
+	if (maxBaseFlowMlPerHour < MIN_FLOW_ML_PER_HOUR)
+		maxBaseFlowMlPerHour = MIN_FLOW_ML_PER_HOUR;
+	if (nextBaseFlowMlPerHour > maxBaseFlowMlPerHour)
+		nextBaseFlowMlPerHour = maxBaseFlowMlPerHour;
+
+	if (nextBaseFlowMlPerHour == baseInfusionFlowMlPerHour)
+	{
+		beep(8, 30);
+		showPumpScreen();
+		return true;
+	}
+
+	float nextTotalFlowMlPerHour = nextBaseFlowMlPerHour + bolusFlowMlPerHour;
+	if (!applyFlowRate(nextTotalFlowMlPerHour))
+		return false;
+
+	baseInfusionFlowMlPerHour = nextBaseFlowMlPerHour;
+	beep(8, 30);
+	showPumpScreen();
+	return true;
+}
+
 void beep(uint16_t delayOn, uint16_t delayOff, bool force)
 {
 	if (!force && !soundEnabled)
@@ -3180,6 +3943,11 @@ void setupTmc2209Uart()
 	tmc2209Driver.intpol(true);
 	tmc2209Driver.rms_current(MOTOR_CURRENT_MA);
 	tmc2209Driver.toff(3);
+	// Enable StallGuard/CoolStep measurement across the full speed range so
+	// SG_RESULT yields a useful load value at the slow step rates the pump
+	// produces. SGTHRS stays at 0 (default) so the driver never triggers
+	// its DIAG stall output - we only read SG_RESULT as a load indicator.
+	tmc2209Driver.TCOOLTHRS(0xFFFFF);
 
 	tmc2209UartConfigured = true;
 	tmc2209UartVerified = verifyTmc2209Readback();
@@ -3241,10 +4009,10 @@ void updateStartupMotorJog(Button heldButton)
 
 bool startStartupMotorJog(bool forward)
 {
-	if (!tmc2209UartVerified)
+	if (!testModeEnabled && !tmc2209UartVerified)
 		return false;
 
-	if (endstopActiveForDirection(forward))
+	if (!testModeEnabled && endstopActiveForDirection(forward))
 		return false;
 
 	noInterrupts();
@@ -3281,14 +4049,14 @@ void stopStartupMotorJog()
 
 bool startMotorSelfTest()
 {
-	if (!tmc2209UartVerified)
+	if (!testModeEnabled && !tmc2209UartVerified)
 	{
 		showStatus(F("Test blockiert"), F("TMC UART fehlt"));
 		beep(250, 80, true);
 		return false;
 	}
 
-	if (endstopActiveForDirection(motorTestDirectionForward))
+	if (!testModeEnabled && endstopActiveForDirection(motorTestDirectionForward))
 	{
 		showStatus(F("Test blockiert"), F("Endstop aktiv"));
 		return false;
@@ -3327,7 +4095,7 @@ void stopMotorSelfTest()
 
 bool canStartPump()
 {
-	if (!tmc2209UartVerified)
+	if (!testModeEnabled && !tmc2209UartVerified)
 	{
 		showStatus(F("TMC2209 Fehler"), F("UART lesen fail"));
 		beep(250, 80, true);
@@ -3353,11 +4121,17 @@ bool canStartPump()
 
 bool forwardEndstopActive()
 {
+	if (testModeEnabled)
+		return false;
+
 	return digitalRead(ENDSTOP_PIN_FORWARD) == HIGH;
 }
 
 bool backwardEndstopActive()
 {
+	if (testModeEnabled)
+		return false;
+
 	return digitalRead(ENDSTOP_PIN_BACKWARD) == HIGH;
 }
 
@@ -3483,15 +4257,15 @@ void stopPump(PumpStopReason reason)
 	currentScreen = SCREEN_MAIN_MENU;
 
 	if (reason == STOP_MANUAL)
-		showStatus(F("Pump stopped   "), F("Manual stop    "));
+		showStatus(F("Perfusor STOP   "), F("Manueller Stopp    "));
 	else if (expectedForwardEndstop)
-		showAcknowledgedStatus(F("Ziel erreicht"), F("Infusion stop"));
+		showAcknowledgedStatus(F("Ziel erreicht"), F("Infusion STOP"));
 	else if (reason == STOP_ENDSTOP)
-		showAlarm(F("ALARM Endstop  "), F("SELECT quittiert"));
+		showAlarm(F("ALARM ENDSTOP  "), F("SELECT quittiert"));
 	else if (reason == STOP_TARGET_VOLUME)
-		showAcknowledgedStatus(F("Ziel erreicht"), F("Infusion stop"));
+		showAcknowledgedStatus(F("Ziel erreicht"), F("Infusion STOP"));
 	else
-		showAlarm(F("ALARM Timer    "), F("SELECT quittiert"));
+		showAlarm(F("ALARM TIMEOUT    "), F("SELECT quittiert"));
 }
 
 void formatElapsedTime(uint32_t elapsedSeconds, char *buffer, size_t bufferSize)
@@ -3782,6 +4556,11 @@ void loadPersistentSettings()
 	uint8_t motorInverted = INVERTDIRECTION ? 1 : 0;
 	uint8_t persistedBolusEnabled = DEFAULT_BOLUS_ENABLED;
 	uint8_t persistedSoundEnabled = DEFAULT_SOUND_ENABLED;
+	uint8_t persistedTestModeEnabled = 0;
+	uint8_t persistedPressureMonitorEnabled = 1;
+	uint8_t persistedPressureScale = PRESSURE_SCALE_DEFAULT;
+	uint8_t persistedPressureAlarmLevel = PRESSURE_ALARM_DEFAULT;
+	uint16_t persistedPressureBaseline = PRESSURE_BASELINE_DEFAULT;
 	uint8_t persistedMaxBolusPercent = DEFAULT_MAX_BOLUS_PERCENT;
 	uint8_t persistedStartupJogSpeedPercent = DEFAULT_STARTUP_JOG_SPEED_PERCENT;
 	bool shouldSave = true;
@@ -3794,6 +4573,11 @@ void loadPersistentSettings()
 			validMotorDirectionInverted(settings.motorDirectionInverted) &&
 			validBolusEnabled(settings.bolusEnabled) &&
 			validSoundEnabled(settings.soundEnabled) &&
+			validTestModeEnabled(settings.testModeEnabled) &&
+			validPressureMonitorEnabled(settings.pressureMonitorEnabled) &&
+			validPressureScale(settings.pressureScale) &&
+			validPressureAlarmLevel(settings.pressureAlarmLevel) &&
+			validPressureBaseline(settings.pressureBaseline) &&
 			validMaxBolusPercent(settings.maxBolusPercent) &&
 			validStartupJogSpeedPercent(settings.startupJogSpeedPercent) &&
 			settingsCrcMatches(&settings))
@@ -3803,9 +4587,62 @@ void loadPersistentSettings()
 			motorInverted = settings.motorDirectionInverted;
 			persistedBolusEnabled = settings.bolusEnabled;
 			persistedSoundEnabled = settings.soundEnabled;
+			persistedTestModeEnabled = settings.testModeEnabled;
+			persistedPressureMonitorEnabled = settings.pressureMonitorEnabled;
+			persistedPressureScale = settings.pressureScale;
+			persistedPressureAlarmLevel = settings.pressureAlarmLevel;
+			persistedPressureBaseline = settings.pressureBaseline;
 			persistedMaxBolusPercent = settings.maxBolusPercent;
 			persistedStartupJogSpeedPercent = settings.startupJogSpeedPercent;
 			shouldSave = false;
+		}
+	}
+	else if (settings.magic == SETTINGS_MAGIC && settings.version == 8)
+	{
+		PersistedSettingsVersion8 previousSettings;
+		readPersistentSettingsVersion8(&previousSettings);
+		if (validDeliveryCenti(previousSettings.deliveryCentiMlPerCm) &&
+			validSyringeCenti(previousSettings.syringeCentiMl) &&
+			validMotorDirectionInverted(previousSettings.motorDirectionInverted) &&
+			validBolusEnabled(previousSettings.bolusEnabled) &&
+			validSoundEnabled(previousSettings.soundEnabled) &&
+			validTestModeEnabled(previousSettings.testModeEnabled) &&
+			validMaxBolusPercent(previousSettings.maxBolusPercent) &&
+			validStartupJogSpeedPercent(previousSettings.startupJogSpeedPercent) &&
+			settingsVersion8CrcMatches(&previousSettings))
+		{
+			deliveryCenti = previousSettings.deliveryCentiMlPerCm;
+			persistedSyringeCenti = previousSettings.syringeCentiMl;
+			motorInverted = previousSettings.motorDirectionInverted;
+			persistedBolusEnabled = previousSettings.bolusEnabled;
+			persistedSoundEnabled = previousSettings.soundEnabled;
+			persistedTestModeEnabled = previousSettings.testModeEnabled;
+			persistedMaxBolusPercent = previousSettings.maxBolusPercent;
+			persistedStartupJogSpeedPercent = previousSettings.startupJogSpeedPercent;
+			settingsWereResetToDefaults = false;
+		}
+	}
+	else if (settings.magic == SETTINGS_MAGIC && settings.version == 7)
+	{
+		PersistedSettingsVersion7 previousSettings;
+		readPersistentSettingsVersion7(&previousSettings);
+		if (validDeliveryCenti(previousSettings.deliveryCentiMlPerCm) &&
+			validSyringeCenti(previousSettings.syringeCentiMl) &&
+			validMotorDirectionInverted(previousSettings.motorDirectionInverted) &&
+			validBolusEnabled(previousSettings.bolusEnabled) &&
+			validSoundEnabled(previousSettings.soundEnabled) &&
+			validMaxBolusPercent(previousSettings.maxBolusPercent) &&
+			validStartupJogSpeedPercent(previousSettings.startupJogSpeedPercent) &&
+			settingsVersion7CrcMatches(&previousSettings))
+		{
+			deliveryCenti = previousSettings.deliveryCentiMlPerCm;
+			persistedSyringeCenti = previousSettings.syringeCentiMl;
+			motorInverted = previousSettings.motorDirectionInverted;
+			persistedBolusEnabled = previousSettings.bolusEnabled;
+			persistedSoundEnabled = previousSettings.soundEnabled;
+			persistedMaxBolusPercent = previousSettings.maxBolusPercent;
+			persistedStartupJogSpeedPercent = previousSettings.startupJogSpeedPercent;
+			settingsWereResetToDefaults = false;
 		}
 	}
 	else if (settings.magic == SETTINGS_MAGIC && settings.version == 6)
@@ -3836,6 +4673,11 @@ void loadPersistentSettings()
 	applyMotorDirectionInverted(motorInverted);
 	applyBolusEnabled(persistedBolusEnabled);
 	applySoundEnabled(persistedSoundEnabled);
+	applyTestModeEnabled(persistedTestModeEnabled);
+	applyPressureMonitorEnabled(persistedPressureMonitorEnabled);
+	applyPressureScale(persistedPressureScale);
+	applyPressureAlarmLevel(persistedPressureAlarmLevel);
+	applyPressureBaseline(persistedPressureBaseline);
 	applyMaxBolusPercent(persistedMaxBolusPercent);
 	applyStartupJogSpeedPercent(persistedStartupJogSpeedPercent);
 
@@ -3850,6 +4692,11 @@ void savePersistentSettings()
 {
 	if (!validDeliveryCenti(editDeliveryCentiMlPerCm) || !validSyringeCenti(syringeCentiMl) ||
 		!validBolusEnabled(bolusEnabled ? 1 : 0) || !validSoundEnabled(soundEnabled ? 1 : 0) ||
+		!validTestModeEnabled(testModeEnabled ? 1 : 0) ||
+		!validPressureMonitorEnabled(pressureMonitorEnabled ? 1 : 0) ||
+		!validPressureScale(pressureScale) ||
+		!validPressureAlarmLevel(pressureAlarmLevel) ||
+		!validPressureBaseline(pressureBaseline) ||
 		!validMaxBolusPercent(maxBolusPercent) || !validStartupJogSpeedPercent(startupJogSpeedPercent))
 		return;
 
@@ -3863,6 +4710,11 @@ void savePersistentSettings()
 		validMotorDirectionInverted(previousSettings.motorDirectionInverted) &&
 		validBolusEnabled(previousSettings.bolusEnabled) &&
 		validSoundEnabled(previousSettings.soundEnabled) &&
+		validTestModeEnabled(previousSettings.testModeEnabled) &&
+		validPressureMonitorEnabled(previousSettings.pressureMonitorEnabled) &&
+		validPressureScale(previousSettings.pressureScale) &&
+		validPressureAlarmLevel(previousSettings.pressureAlarmLevel) &&
+		validPressureBaseline(previousSettings.pressureBaseline) &&
 		validMaxBolusPercent(previousSettings.maxBolusPercent) &&
 		validStartupJogSpeedPercent(previousSettings.startupJogSpeedPercent) &&
 		settingsCrcMatches(&previousSettings) &&
@@ -3870,6 +4722,11 @@ void savePersistentSettings()
 		previousSettings.syringeCentiMl == syringeCentiMl &&
 		previousSettings.bolusEnabled == (bolusEnabled ? 1 : 0) &&
 		previousSettings.soundEnabled == (soundEnabled ? 1 : 0) &&
+		previousSettings.testModeEnabled == (testModeEnabled ? 1 : 0) &&
+		previousSettings.pressureMonitorEnabled == (pressureMonitorEnabled ? 1 : 0) &&
+		previousSettings.pressureScale == pressureScale &&
+		previousSettings.pressureAlarmLevel == pressureAlarmLevel &&
+		previousSettings.pressureBaseline == pressureBaseline &&
 		previousSettings.maxBolusPercent == maxBolusPercent &&
 		previousSettings.startupJogSpeedPercent == startupJogSpeedPercent &&
 		previousSettings.motorDirectionInverted == (motorDirectionInverted ? 1 : 0))
@@ -3885,8 +4742,13 @@ void savePersistentSettings()
 	settings.syringeCentiMl = syringeCentiMl;
 	settings.bolusEnabled = bolusEnabled ? 1 : 0;
 	settings.soundEnabled = soundEnabled ? 1 : 0;
+	settings.testModeEnabled = testModeEnabled ? 1 : 0;
 	settings.maxBolusPercent = maxBolusPercent;
 	settings.startupJogSpeedPercent = startupJogSpeedPercent;
+	settings.pressureMonitorEnabled = pressureMonitorEnabled ? 1 : 0;
+	settings.pressureScale = pressureScale;
+	settings.pressureAlarmLevel = pressureAlarmLevel;
+	settings.pressureBaseline = pressureBaseline;
 	settings.crc = settingsCrc16(&settings);
 	writePersistentSettings(&settings);
 }
@@ -3914,6 +4776,31 @@ bool validBolusEnabled(uint8_t value)
 bool validSoundEnabled(uint8_t value)
 {
 	return value == 0 || value == 1;
+}
+
+bool validTestModeEnabled(uint8_t value)
+{
+	return value == 0 || value == 1;
+}
+
+bool validPressureMonitorEnabled(uint8_t value)
+{
+	return value == 0 || value == 1;
+}
+
+bool validPressureScale(uint8_t value)
+{
+	return value >= PRESSURE_SCALE_MIN && value <= PRESSURE_SCALE_MAX;
+}
+
+bool validPressureAlarmLevel(uint8_t value)
+{
+	return value >= PRESSURE_ALARM_MIN && value <= PRESSURE_ALARM_MAX;
+}
+
+bool validPressureBaseline(uint16_t value)
+{
+	return value <= PRESSURE_SG_MAX;
 }
 
 bool validMaxBolusPercent(uint8_t value)
@@ -3967,6 +4854,109 @@ void applySoundEnabled(uint8_t value)
 		value = DEFAULT_SOUND_ENABLED;
 
 	soundEnabled = value == 1;
+}
+
+void applyTestModeEnabled(uint8_t value)
+{
+	if (!validTestModeEnabled(value))
+		value = 0;
+
+	testModeEnabled = value == 1;
+}
+
+void applyPressureMonitorEnabled(uint8_t value)
+{
+	if (!validPressureMonitorEnabled(value))
+		value = 1;
+
+	pressureMonitorEnabled = value == 1;
+}
+
+void applyPressureScale(uint8_t value)
+{
+	if (!validPressureScale(value))
+		value = PRESSURE_SCALE_DEFAULT;
+
+	pressureScale = value;
+}
+
+void applyPressureAlarmLevel(uint8_t value)
+{
+	if (!validPressureAlarmLevel(value))
+		value = PRESSURE_ALARM_DEFAULT;
+
+	pressureAlarmLevel = value;
+}
+
+void applyPressureBaseline(uint16_t value)
+{
+	if (!validPressureBaseline(value))
+		value = PRESSURE_BASELINE_DEFAULT;
+
+	pressureBaseline = value;
+}
+
+uint16_t readPressureSg()
+{
+	// Without a verified UART link to the driver we cannot read SG_RESULT.
+	// Also skip the read in test mode (no real driver attached) and when
+	// the motor is not stepping, since StallGuard4 needs continuous step
+	// pulses to produce a meaningful value.
+	if (!tmc2209UartConfigured || !tmc2209UartVerified || testModeEnabled || !pumpRunning)
+		return PRESSURE_SG_MAX;
+
+	listenTmc2209Serial();
+	uint16_t sg = tmc2209Driver.SG_RESULT();
+	// Library returns 0 on UART read failure; treat that as "no signal"
+	// (= no load) rather than a stall to avoid spurious high-pressure
+	// readings if a packet is occasionally lost.
+	if (sg == 0)
+		return PRESSURE_SG_MAX;
+	if (sg > PRESSURE_SG_MAX)
+		sg = PRESSURE_SG_MAX;
+	return sg;
+}
+
+uint8_t pressurePercentFromSg(uint16_t sg)
+{
+	// Higher load = lower SG_RESULT. Compute load relative to the calibrated
+	// baseline (free-running SG value) and map to a 0..100 percentage
+	// according to the user-selected sensitivity scale.
+	uint16_t reference = pressureBaseline == 0 ? PRESSURE_SG_MAX : pressureBaseline;
+	if (sg >= reference)
+		return 0;
+	uint16_t load = (uint16_t)(reference - sg);
+
+	uint8_t scale = pressureScale;
+	if (scale < PRESSURE_SCALE_MIN)
+		scale = PRESSURE_SCALE_MIN;
+	if (scale > PRESSURE_SCALE_MAX)
+		scale = PRESSURE_SCALE_MAX;
+	// Full-scale span in SG units decreases as the scale value increases,
+	// i.e. higher scale = more sensitive bar.
+	uint16_t fullScaleUnits = (uint16_t)(PRESSURE_FULL_SCALE_UNITS_BASE *
+		(uint16_t)((PRESSURE_SCALE_MAX + 1) - scale));
+	if (fullScaleUnits == 0)
+		fullScaleUnits = 1;
+	uint32_t percent = ((uint32_t)load * 100UL) / (uint32_t)fullScaleUnits;
+	if (percent > 100UL)
+		percent = 100UL;
+	return (uint8_t)percent;
+}
+
+void calibratePressureBaseline()
+{
+	uint16_t sg = PRESSURE_SG_MAX;
+	if (tmc2209UartConfigured && tmc2209UartVerified && !testModeEnabled)
+	{
+		listenTmc2209Serial();
+		sg = tmc2209Driver.SG_RESULT();
+		if (sg == 0 || sg > PRESSURE_SG_MAX)
+			sg = PRESSURE_SG_MAX;
+	}
+	pressureBaseline = sg;
+	savePersistentSettings();
+	showStatus(F("Druck genullt"), F(""));
 }
 
 void applyMaxBolusPercent(uint8_t value)
@@ -4028,6 +5018,16 @@ bool settingsCrcMatches(const PersistedSettings *settings)
 	return settings->crc == settingsCrc16(settings);
 }
 
+bool settingsVersion7CrcMatches(const PersistedSettingsVersion7 *settings)
+{
+	return settings->crc == settingsCrc16Bytes((const uint8_t *)settings, offsetof(PersistedSettingsVersion7, crc));
+}
+
+bool settingsVersion8CrcMatches(const PersistedSettingsVersion8 *settings)
+{
+	return settings->crc == settingsCrc16Bytes((const uint8_t *)settings, offsetof(PersistedSettingsVersion8, crc));
+}
+
 bool settingsVersion6CrcMatches(const PersistedSettingsVersion6 *settings)
 {
 	return settings->crc == settingsCrc16Bytes((const uint8_t *)settings, offsetof(PersistedSettingsVersion6, crc));
@@ -4058,6 +5058,20 @@ void readPersistentSettingsVersion6(PersistedSettingsVersion6 *settings)
 {
 	uint8_t *bytes = (uint8_t *)settings;
 	for (uint8_t index = 0; index < sizeof(PersistedSettingsVersion6); index++)
+		bytes[index] = readEepromByte(SETTINGS_EEPROM_ADDRESS + index);
+}
+
+void readPersistentSettingsVersion7(PersistedSettingsVersion7 *settings)
+{
+	uint8_t *bytes = (uint8_t *)settings;
+	for (uint8_t index = 0; index < sizeof(PersistedSettingsVersion7); index++)
+		bytes[index] = readEepromByte(SETTINGS_EEPROM_ADDRESS + index);
+}
+
+void readPersistentSettingsVersion8(PersistedSettingsVersion8 *settings)
+{
+	uint8_t *bytes = (uint8_t *)settings;
+	for (uint8_t index = 0; index < sizeof(PersistedSettingsVersion8); index++)
 		bytes[index] = readEepromByte(SETTINGS_EEPROM_ADDRESS + index);
 }
 
