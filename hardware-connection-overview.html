@@ -448,10 +448,10 @@ code {
     <div class="card">
       <h2>Endstop and Power Notes</h2>
       <div class="note" style="margin-bottom: 12px;">
-        <strong>Endstop logic:</strong> the sketch sets both endstop inputs to <code>INPUT_PULLUP</code> and treats a <code>HIGH</code> reading as active. That matches a <strong>normally closed (NC)</strong> switch wired between the pin and GND, where the pin goes HIGH when the switch opens at the limit.
+        <strong>Endstop logic:</strong> the sketch sets both endstop inputs to <code>INPUT_PULLUP</code> and treats a <code>LOW</code> reading as active. That lets the motor run even when no endstop is connected, and matches a <strong>normally open (NO)</strong> switch wired between the pin and GND.
       </div>
       <ul>
-        <li>If your endstops are <strong>normally open (NO)</strong>, the current logic will not match and you should either rewire them or invert the logic in the sketch.</li>
+        <li>If your endstops are <strong>normally closed (NC)</strong>, the current logic will not match and you should either rewire them or invert the logic in the sketch.</li>
         <li>The TMC2209 motor power should come from the motor supply, not from the UNO 5V pin.</li>
         <li>Motor coil order is not defined by the sketch. If direction or motion is wrong, swap one coil pair or adjust the motor direction setting in software.</li>
         <li>The sketch configures the TMC2209 for <code>32</code> microsteps over UART and expects address <code>0</code>.</li>

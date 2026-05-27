@@ -48,12 +48,12 @@
 ********************************************************************/
 
 // Stepper motor and mechanics
-#define NOFMICROSTEPS 32
+#define NOFMICROSTEPS 64
 #define NOFSTEPSPER360 200
 #define MAXRPM 120
 #define INVERTDIRECTION true
 #define MMPER360 8.0
-#define MOTOR_CURRENT_MA 700
+#define MOTOR_CURRENT_MA 600
 
 // Syringe setup
 #define DEFAULT_FLOW_ML_PER_HOUR 50.00
@@ -87,6 +87,18 @@
 #define BOLUS_MENU_TIMEOUT_MS 5000UL
 #define STATUS_DISPLAY_MS 1200UL
 #define MOTOR_TEST_STEP_RATE_HZ 10.0
+// Pressure test uses its own driver settings. 16 microsteps reduce the CPU
+// load for the cooperative UNO R4 step clock while 3200 steps/s still equals
+// one motor rev/s (~60 RPM), a much better range for StallGuard4 than a slow
+// syringe feed rate.
+#define PRESSURE_TEST_MICROSTEPS 32
+#define PRESSURE_TEST_CURRENT_MA 850
+#define PRESSURE_TEST_STEP_RATE_HZ 10000.0
+#define PRESSURE_TEST_STEP_RATE_MIN_HZ 18000.0
+#define PRESSURE_TEST_STEP_RATE_MAX_HZ 180000.0
+// Each +/- press multiplies / divides the test rate by this factor so the
+// useful StallGuard4 speed range (roughly 0.25..4 rev/s) can be swept fast.
+#define PRESSURE_TEST_STEP_RATE_FACTOR 1.25
 
 // Arduino Uno + parallel TFT shield pin plan.
 // The TFT shield uses D2-D9 and A0-A4. Its SD-card SPI pins are repurposed.
@@ -105,6 +117,7 @@
 #define ENDSTOP_PIN_FORWARD A5
 #define ENDSTOP_PIN_BACKWARD 11
 #endif
+#define ENDSTOP_ACTIVE_STATE LOW
 #define BUZZER_PIN 13
 
 #define TFT_TOUCH_YP A3
@@ -112,7 +125,11 @@
 #define TFT_TOUCH_YM 9
 #define TFT_TOUCH_XP 8
 
+#if defined(ARDUINO_ARCH_AVR)
 #define TMC2209_UART_BAUD 19200UL
+#else
+#define TMC2209_UART_BAUD 115200UL
+#endif
 #define TMC2209_UART_DRIVER_ADDRESS 0
 #define TMC2209_UART_R_SENSE 0.11f
 #define TMC2209_EXPECTED_VERSION 0x21
@@ -494,7 +511,7 @@ private:
 #define SETTINGS_EEPROM_ADDRESS 0
 #define SETTINGS_MAGIC 0x5046
 #define SETTINGS_VERSION 9
-#define SETTINGS_MENU_COUNT 14
+#define SETTINGS_MENU_COUNT 15
 #define SETTINGS_MENU_DELIVERY 0
 #define SETTINGS_MENU_SYRINGE 1
 #define SETTINGS_MENU_BOLUS 2
@@ -507,8 +524,9 @@ private:
 #define SETTINGS_MENU_PRESSURE_SCALE 9
 #define SETTINGS_MENU_PRESSURE_ALARM 10
 #define SETTINGS_MENU_PRESSURE_ZERO 11
-#define SETTINGS_MENU_MOTOR_TEST 12
-#define SETTINGS_MENU_SUPPORT 13
+#define SETTINGS_MENU_PRESSURE_TEST 12
+#define SETTINGS_MENU_MOTOR_TEST 13
+#define SETTINGS_MENU_SUPPORT 14
 #define PRESSURE_SCALE_MIN 1
 #define PRESSURE_SCALE_MAX 10
 #define PRESSURE_SCALE_DEFAULT 5
@@ -517,10 +535,20 @@ private:
 #define PRESSURE_ALARM_DEFAULT 7
 #define PRESSURE_BASELINE_DEFAULT 0
 #define PRESSURE_SG_MAX 1023
+#define PRESSURE_SAMPLE_INTERVAL_MS 40UL
+#if defined(ARDUINO_ARCH_AVR)
+#define PRESSURE_TEST_SAMPLE_INTERVAL_US 20000UL
+#else
+#define PRESSURE_TEST_SAMPLE_INTERVAL_US 3000UL
+#endif
+#define PRESSURE_TEST_DISPLAY_INTERVAL_MS 80UL
+#define PRESSURE_TEST_ZERO_STREAK_WARN 3
+#define PRESSURE_BASELINE_SAMPLE_COUNT 8
+#define PRESSURE_BASELINE_SAMPLE_DELAY_MS 20
 // Mapping from the 1..10 scale to the SG-units that count as 100% bar fill.
 // Scale 1 = least sensitive (wider span, bar fills slowly even at high load).
 // Scale 10 = most sensitive (narrow span, bar fills quickly).
-#define PRESSURE_FULL_SCALE_UNITS_BASE 50
+#define PRESSURE_FULL_SCALE_UNITS_BASE 3
 #define PRESSURE_ALARM_SUSTAIN_TICKS 3
 #define SETTINGS_SUPPORT_TIMEOUT_MS 10000UL
 #define STARTUP_SPLASH_MS 1500UL
@@ -532,7 +560,7 @@ private:
 #define START_MENU_VOLUME_TIME 0
 #define START_MENU_RATE 1
 
-#if SETTINGS_MENU_COUNT != 14
+#if SETTINGS_MENU_COUNT != 15
 #error SETTINGS_MENU_COUNT must match the explicit SETTINGS_MENU_* indices.
 #endif
 
@@ -1056,7 +1084,20 @@ enum UiScreen
 	SCREEN_SUPPORT_INFO,
 	SCREEN_EDIT_BOLUS,
 	SCREEN_CONFIRM_BOLUS,
-	SCREEN_CONFIRM_INFUSION
+	SCREEN_CONFIRM_INFUSION,
+	SCREEN_PRESSURE_TEST
+};
+
+enum PressureTestStatus
+{
+	PRESSURE_TEST_IDLE,
+	PRESSURE_TEST_WAITING,
+	PRESSURE_TEST_UART_OFF,
+	PRESSURE_TEST_UART_FAIL,
+	PRESSURE_TEST_TESTMODE,
+	PRESSURE_TEST_CRC,
+	PRESSURE_TEST_ZERO,
+	PRESSURE_TEST_OK
 };
 
 volatile int32_t stepCounter = 0;
@@ -1092,6 +1133,7 @@ uint16_t pressureBaseline = PRESSURE_BASELINE_DEFAULT;
 uint16_t pressureCurrentSg = PRESSURE_SG_MAX;
 uint8_t pressureCurrentBarPercent = 0;
 uint8_t pressureHighTicks = 0;
+uint32_t pressureLastSampleMillis = 0;
 uint32_t pressureLastAlarmBeepMillis = 0;
 uint8_t maxBolusPercent = DEFAULT_MAX_BOLUS_PERCENT;
 uint8_t startupJogSpeedPercent = DEFAULT_STARTUP_JOG_SPEED_PERCENT;
@@ -1126,6 +1168,19 @@ bool motorTestRunning = false;
 bool motorTestDirectionForward = true;
 bool startupJogRunning = false;
 bool startupJogDirectionForward = true;
+bool pressureTestRunning = false;
+bool pressureTestHasSample = false;
+uint16_t pressureTestRawSg = 0;
+uint16_t pressureTestCrcErrors = 0;
+uint16_t pressureTestZeroReads = 0;
+uint8_t pressureTestZeroStreak = 0;
+uint16_t pressureTestSampleRate = 0;
+uint16_t pressureTestSamplesThisSecond = 0;
+uint32_t pressureTestLastSampleMicros = 0;
+uint32_t pressureTestSampleRateWindowMillis = 0;
+uint32_t pressureTestLastDisplayMillis = 0;
+float pressureTestStepRateHz = PRESSURE_TEST_STEP_RATE_HZ;
+PressureTestStatus pressureTestStatus = PRESSURE_TEST_IDLE;
 bool tmc2209UartConfigured = false;
 bool tmc2209UartVerified = false;
 bool tmc2209UartLibraryPresent = true;
@@ -1270,7 +1325,7 @@ bool tmc2209CurrentReadbackOk(uint16_t currentMa);
 void updateStartupMotorJog(Button heldButton);
 bool startStartupMotorJog(bool forward);
 void stopStartupMotorJog();
-bool startMotorSelfTest();
+bool startMotorSelfTest(float stepRateHz = MOTOR_TEST_STEP_RATE_HZ);
 void stopMotorSelfTest();
 void setMotorDirection(bool forward);
 bool canStartPump();
@@ -1280,6 +1335,8 @@ bool anyEndstopActive();
 bool endstopActiveForDirection(bool forward);
 void enableMotorDriver();
 void disableMotorDriver();
+void configurePressureTestDriver();
+void restoreTmc2209MotionSettings();
 void configureEndstopInterrupts();
 void stopMotorClockFromIsr();
 void setStepPinLow();
@@ -1344,9 +1401,16 @@ void readPersistentSettingsVersion7(PersistedSettingsVersion7 *settings);
 void readPersistentSettingsVersion8(PersistedSettingsVersion8 *settings);
 void readPersistentSettings(PersistedSettings *settings);
 void writePersistentSettings(const PersistedSettings *settings);
+bool readPressureSgRaw(uint16_t *sg);
 uint16_t readPressureSg();
 uint8_t pressurePercentFromSg(uint16_t sg);
 void calibratePressureBaseline();
+void servicePressureMonitor();
+const char *pressureTestStatusText();
+void beginPressureTestScreen();
+void showPressureTestScreen();
+void updatePressureTestScreen();
+void stopPressureTest();
 
 void setup()
 {
@@ -1441,6 +1505,8 @@ void loop()
 		stopPump(STOP_TARGET_VOLUME);
 		return;
 	}
+
+	servicePressureMonitor();
 
 	if (millis() - lastDisplayMillis >= DISPLAY_UPDATE_MS)
 	{
@@ -1939,6 +2005,8 @@ void showCurrentScreen()
 		showBolusConfirm();
 	else if (currentScreen == SCREEN_CONFIRM_INFUSION)
 		showInfusionConfirm();
+	else if (currentScreen == SCREEN_PRESSURE_TEST)
+		showPressureTestScreen();
 	else
 		showSettingsMenu();
 }
@@ -2102,6 +2170,9 @@ void printSettingsMenuItem(uint8_t itemIndex, bool selected)
 	}
 	case SETTINGS_MENU_PRESSURE_ZERO:
 		tft.print(F("Druck nullen"));
+		break;
+	case SETTINGS_MENU_PRESSURE_TEST:
+		tft.print(F("Drucksensor-Test"));
 		break;
 	case SETTINGS_MENU_MOTOR_TEST:
 		tft.print(F("Motortest"));
@@ -2336,6 +2407,195 @@ void showSupportInfoScreen()
 	setActionBar(ackActionBar(TFT_GREEN), false);
 }
 
+void beginPressureTestScreen()
+{
+	pressureTestRunning = false;
+	resetPressureTestSampling();
+	pressureTestStatus = PRESSURE_TEST_IDLE;
+	motorTestDirectionForward = true;
+	currentScreen = SCREEN_PRESSURE_TEST;
+	showPressureTestScreen();
+}
+
+void stopPressureTest()
+{
+	if (motorTestRunning)
+		stopMotorSelfTest();
+	restoreTmc2209MotionSettings();
+	pressureTestRunning = false;
+}
+
+void renderPressureTestReadout()
+{
+	char line1[24];
+	char line2[24];
+	char line3[28];
+	char line4[28];
+
+	const char *uartStatus;
+	if (!tmc2209UartConfigured)
+		uartStatus = "AUS";
+	else if (!tmc2209UartVerified)
+		uartStatus = "FAIL";
+	else
+		uartStatus = "OK";
+
+	uint32_t testRateHzInt = pressureTestRunning ? (uint32_t)(pressureTestStepRateHz + 0.5) : 0;
+	uint32_t testRpmInt = 0;
+	if (pressureTestRunning)
+	{
+		float revsPerSecond = pressureTestStepRateHz /
+			((float)NOFSTEPSPER360 * (float)PRESSURE_TEST_MICROSTEPS);
+		testRpmInt = (uint32_t)(revsPerSecond * 60.0 + 0.5);
+	}
+	if (pressureTestRunning)
+		snprintf(line1, sizeof(line1), "Hz:%5lu R:%3lu     ",
+			(unsigned long)testRateHzInt, (unsigned long)testRpmInt);
+	else
+		snprintf(line1, sizeof(line1), "Motor : AUS         ");
+	if (pressureTestHasSample)
+		snprintf(line2, sizeof(line2), "SG raw: %4u        ", (unsigned int)pressureTestRawSg);
+	else
+		snprintf(line2, sizeof(line2), "SG raw: ----        ");
+	uint8_t percent = pressureTestHasSample ? pressurePercentFromSg(pressureTestRawSg) : 0;
+	snprintf(line3, sizeof(line3), "Bar:%3u%% S%3u Z%u     ",
+		(unsigned int)percent, (unsigned int)pressureTestSampleRate,
+		(unsigned int)pressureTestZeroReads);
+	snprintf(line4, sizeof(line4), "%-8s B%4u C%u %s   ",
+		pressureTestStatusText(), (unsigned int)pressureBaseline,
+		(unsigned int)pressureTestCrcErrors, uartStatus);
+
+	printAtText(16, 56, 2, TFT_WHITE, line1);
+	printAtText(16, 80, 2, TFT_WHITE, line2);
+	printAtText(16, 104, 2, TFT_CYAN, line3);
+	printAtText(16, 128, 2, TFT_CYAN, line4);
+}
+
+void showPressureTestScreen()
+{
+	ActionSlot toggle = {pressureTestRunning ? "STP" : "GO", NULL,
+		pressureTestRunning ? TFT_RED : TFT_GREEN, TFT_WHITE,
+		BUTTON_SELECT, ACTION_MODE_RELEASE};
+	ActionSlot slower = {"-", "RPM", TFT_NAVY, TFT_WHITE,
+		BUTTON_DOWN, ACTION_MODE_REPEAT};
+	ActionSlot faster = {"+", "RPM", TFT_NAVY, TFT_WHITE,
+		BUTTON_UP, ACTION_MODE_REPEAT};
+	ActionSlot zero = {"0", "BASE", TFT_NAVY, TFT_WHITE,
+		BUTTON_RIGHT, ACTION_MODE_RELEASE};
+
+	beginScreen(F("Drucksensor-Test"), true);
+	renderPressureTestReadout();
+	setActionBar(makeBar4(toggle, slower, faster, zero), true);
+}
+
+void resetPressureTestSampling()
+{
+	pressureTestHasSample = false;
+	pressureTestRawSg = 0;
+	pressureTestCrcErrors = 0;
+	pressureTestZeroReads = 0;
+	pressureTestZeroStreak = 0;
+	pressureTestSampleRate = 0;
+	pressureTestSamplesThisSecond = 0;
+	pressureTestLastSampleMicros = 0;
+	pressureTestSampleRateWindowMillis = 0;
+	pressureTestLastDisplayMillis = 0;
+	pressureTestStatus = PRESSURE_TEST_WAITING;
+}
+
+void updatePressureTestScreen()
+{
+	if (currentScreen != SCREEN_PRESSURE_TEST)
+		return;
+
+	if (pressureTestRunning && !motorTestRunning)
+	{
+		// Motor self-test aborted (timer fault / endstop). Reflect that.
+		restoreTmc2209MotionSettings();
+		pressureTestRunning = false;
+		showPressureTestScreen();
+		return;
+	}
+
+	if (!pressureTestRunning)
+		return;
+
+	uint32_t now = millis();
+	uint32_t nowMicros = micros();
+	bool sampled = false;
+	if (pressureTestLastSampleMicros == 0 ||
+		(uint32_t)(nowMicros - pressureTestLastSampleMicros) >= PRESSURE_TEST_SAMPLE_INTERVAL_US)
+	{
+		pressureTestLastSampleMicros = nowMicros;
+		sampled = true;
+	}
+
+	if (pressureTestSampleRateWindowMillis == 0)
+		pressureTestSampleRateWindowMillis = now;
+	else if ((now - pressureTestSampleRateWindowMillis) >= 1000UL)
+	{
+		pressureTestSampleRate = pressureTestSamplesThisSecond;
+		pressureTestSamplesThisSecond = 0;
+		pressureTestSampleRateWindowMillis = now;
+	}
+
+	if (sampled && !tmc2209UartConfigured)
+	{
+		pressureTestStatus = PRESSURE_TEST_UART_OFF;
+	}
+	else if (sampled && !tmc2209UartVerified)
+	{
+		pressureTestStatus = PRESSURE_TEST_UART_FAIL;
+	}
+	else if (sampled && testModeEnabled)
+	{
+		pressureTestStatus = PRESSURE_TEST_TESTMODE;
+	}
+	else if (sampled)
+	{
+		uint16_t sg;
+		if (!readPressureSgRaw(&sg))
+		{
+			if (pressureTestCrcErrors < 9999)
+				pressureTestCrcErrors++;
+			pressureTestStatus = PRESSURE_TEST_CRC;
+		}
+		else if (sg == 0)
+		{
+			if (pressureTestSamplesThisSecond < 999)
+				pressureTestSamplesThisSecond++;
+			if (pressureTestZeroReads < 9999)
+				pressureTestZeroReads++;
+			if (pressureTestZeroStreak < 0xFF)
+				pressureTestZeroStreak++;
+			// Display the raw value live, even if the driver currently returns
+			// zero (low load / slow stepping). The status text only switches
+			// to PRESSURE_TEST_ZERO after a short streak to avoid flicker.
+			pressureTestRawSg = 0;
+			pressureTestHasSample = true;
+			if (pressureTestZeroStreak >= PRESSURE_TEST_ZERO_STREAK_WARN)
+				pressureTestStatus = PRESSURE_TEST_ZERO;
+		}
+		else
+		{
+			if (pressureTestSamplesThisSecond < 999)
+				pressureTestSamplesThisSecond++;
+			if (sg > PRESSURE_SG_MAX)
+				sg = PRESSURE_SG_MAX;
+			pressureTestRawSg = sg;
+			pressureTestHasSample = true;
+			pressureTestZeroStreak = 0;
+			pressureTestStatus = PRESSURE_TEST_OK;
+		}
+	}
+
+	if (pressureTestLastDisplayMillis == 0 || (now - pressureTestLastDisplayMillis) >= PRESSURE_TEST_DISPLAY_INTERVAL_MS)
+	{
+		pressureTestLastDisplayMillis = now;
+		renderPressureTestReadout();
+	}
+}
+
 void showBolusEditor()
 {
 	uint8_t whole = editBolusCentiMl / 100;
@@ -2513,9 +2773,7 @@ void showPumpScreen()
 
 	if (pressureMonitorEnabled)
 	{
-		uint16_t sg = readPressureSg();
-		pressureCurrentSg = sg;
-		uint8_t percent = pressurePercentFromSg(sg);
+		uint8_t percent = pressureCurrentBarPercent;
 		pressureCurrentBarPercent = percent;
 
 		// Choose fill color from the visual scale level. Yellow above
@@ -2599,6 +2857,7 @@ void showPumpScreen()
 		lastPressureFillPx = 0xFFFF;
 		lastPressureColor = 0;
 		pressureHighTicks = 0;
+		pressureLastSampleMillis = 0;
 	}
 
 	setActionBar(pumpActionBar(bolusEnabled), false);
@@ -2734,6 +2993,71 @@ void handleUiButton(Button button)
 	{
 		if (currentScreen == SCREEN_SETTINGS_SUPPORT)
 			updateSettingsSupportScreen();
+		else if (currentScreen == SCREEN_PRESSURE_TEST)
+			updatePressureTestScreen();
+		return;
+	}
+
+	if (currentScreen == SCREEN_PRESSURE_TEST)
+	{
+		if (button == BUTTON_LEFT || button == BUTTON_BACK)
+		{
+			stopPressureTest();
+			currentScreen = SCREEN_SETTINGS_MENU;
+			beep(8, 30);
+			showSettingsMenu();
+		}
+		else if (button == BUTTON_SELECT)
+		{
+			if (pressureTestRunning)
+				stopPressureTest();
+			else
+			{
+				configurePressureTestDriver();
+				if (startMotorSelfTest(pressureTestStepRateHz))
+				{
+					pressureTestRunning = true;
+					resetPressureTestSampling();
+				}
+				else
+					restoreTmc2209MotionSettings();
+			}
+			beep(8, 30);
+			showPressureTestScreen();
+		}
+		else if (button == BUTTON_RIGHT)
+		{
+			calibratePressureBaseline();
+			pressureTestLastDisplayMillis = 0;
+			showPressureTestScreen();
+		}
+		else if (button == BUTTON_UP || button == BUTTON_DOWN)
+		{
+			float nextRateHz = pressureTestStepRateHz;
+			if (button == BUTTON_UP)
+				nextRateHz *= PRESSURE_TEST_STEP_RATE_FACTOR;
+			else
+				nextRateHz /= PRESSURE_TEST_STEP_RATE_FACTOR;
+			if (nextRateHz < PRESSURE_TEST_STEP_RATE_MIN_HZ)
+				nextRateHz = PRESSURE_TEST_STEP_RATE_MIN_HZ;
+			if (nextRateHz > PRESSURE_TEST_STEP_RATE_MAX_HZ)
+				nextRateHz = PRESSURE_TEST_STEP_RATE_MAX_HZ;
+			if (nextRateHz != pressureTestStepRateHz)
+			{
+				if (pressureTestRunning && motorTestRunning)
+				{
+					if (configureTimer1PreservePhase(nextRateHz))
+						pressureTestStepRateHz = nextRateHz;
+				}
+				else
+				{
+					pressureTestStepRateHz = nextRateHz;
+				}
+			}
+			beep(4, 15);
+			pressureTestLastDisplayMillis = 0;
+			renderPressureTestReadout();
+		}
 		return;
 	}
 
@@ -2978,8 +3302,11 @@ void handleUiButton(Button button)
 			else if (settingsMenuIndex == SETTINGS_MENU_PRESSURE_ZERO)
 			{
 				calibratePressureBaseline();
-				showSettingsMenu();
+				if (!statusActive)
+					showSettingsMenu();
 			}
+			else if (settingsMenuIndex == SETTINGS_MENU_PRESSURE_TEST)
+				beginPressureTestScreen();
 			else if (settingsMenuIndex == SETTINGS_MENU_MOTOR_TEST)
 				beginSettingsSupportScreen();
 			else if (settingsMenuIndex == SETTINGS_MENU_SUPPORT)
@@ -3943,6 +4270,10 @@ void setupTmc2209Uart()
 	tmc2209Driver.intpol(true);
 	tmc2209Driver.rms_current(MOTOR_CURRENT_MA);
 	tmc2209Driver.toff(3);
+	// StallGuard-based pressure sensing needs the driver in spreadCycle.
+	// TPWMTHRS = 0 disables stealthChop on the TMC2209 so SG_RESULT is
+	// available instead of alternating near-zero dummy values.
+	tmc2209Driver.TPWMTHRS(0);
 	// Enable StallGuard/CoolStep measurement across the full speed range so
 	// SG_RESULT yields a useful load value at the slow step rates the pump
 	// produces. SGTHRS stays at 0 (default) so the driver never triggers
@@ -4047,7 +4378,7 @@ void stopStartupMotorJog()
 	startupJogRunning = false;
 }
 
-bool startMotorSelfTest()
+bool startMotorSelfTest(float stepRateHz)
 {
 	if (!testModeEnabled && !tmc2209UartVerified)
 	{
@@ -4071,7 +4402,7 @@ bool startMotorSelfTest()
 
 	setMotorDirection(motorTestDirectionForward);
 
-	if (!configureTimer1(MOTOR_TEST_STEP_RATE_HZ))
+	if (!configureTimer1(stepRateHz))
 	{
 		showStatus(F("Test blockiert"), F("Timerfehler"));
 		return false;
@@ -4124,7 +4455,7 @@ bool forwardEndstopActive()
 	if (testModeEnabled)
 		return false;
 
-	return digitalRead(ENDSTOP_PIN_FORWARD) == HIGH;
+	return digitalRead(ENDSTOP_PIN_FORWARD) == ENDSTOP_ACTIVE_STATE;
 }
 
 bool backwardEndstopActive()
@@ -4132,7 +4463,7 @@ bool backwardEndstopActive()
 	if (testModeEnabled)
 		return false;
 
-	return digitalRead(ENDSTOP_PIN_BACKWARD) == HIGH;
+	return digitalRead(ENDSTOP_PIN_BACKWARD) == ENDSTOP_ACTIVE_STATE;
 }
 
 bool anyEndstopActive()
@@ -4165,6 +4496,32 @@ void disableMotorDriver()
 	if (tmc2209UartConfigured)
 		tmc2209Driver.toff(0);
 	setStepPinLow();
+}
+
+void configurePressureTestDriver()
+{
+	if (testModeEnabled || !tmc2209UartConfigured || !tmc2209UartVerified)
+		return;
+
+	listenTmc2209Serial();
+	tmc2209Driver.microsteps(PRESSURE_TEST_MICROSTEPS);
+	tmc2209Driver.intpol(false);
+	tmc2209Driver.rms_current(PRESSURE_TEST_CURRENT_MA);
+	tmc2209Driver.TPWMTHRS(0);
+	tmc2209Driver.TCOOLTHRS(0xFFFFF);
+}
+
+void restoreTmc2209MotionSettings()
+{
+	if (testModeEnabled || !tmc2209UartConfigured)
+		return;
+
+	listenTmc2209Serial();
+	tmc2209Driver.microsteps(NOFMICROSTEPS);
+	tmc2209Driver.intpol(true);
+	tmc2209Driver.rms_current(MOTOR_CURRENT_MA);
+	tmc2209Driver.TPWMTHRS(0);
+	tmc2209Driver.TCOOLTHRS(0xFFFFF);
 }
 
 void configureEndstopInterrupts()
@@ -4896,22 +5253,42 @@ void applyPressureBaseline(uint16_t value)
 	pressureBaseline = value;
 }
 
+bool readPressureSgRaw(uint16_t *sg)
+{
+	if (sg == NULL || !tmc2209UartConfigured || !tmc2209UartVerified)
+		return false;
+
+	serviceMotorClock();
+	listenTmc2209Serial();
+	tmc2209Driver.CRCerror = false;
+	uint16_t value = tmc2209Driver.SG_RESULT();
+	serviceMotorClock();
+	if (tmc2209Driver.CRCerror)
+		return false;
+	if (value > PRESSURE_SG_MAX)
+		value = PRESSURE_SG_MAX;
+	*sg = value;
+	return true;
+}
+
 uint16_t readPressureSg()
 {
 	// Without a verified UART link to the driver we cannot read SG_RESULT.
 	// Also skip the read in test mode (no real driver attached) and when
 	// the motor is not stepping, since StallGuard4 needs continuous step
 	// pulses to produce a meaningful value.
-	if (!tmc2209UartConfigured || !tmc2209UartVerified || testModeEnabled || !pumpRunning)
-		return PRESSURE_SG_MAX;
+	uint16_t neutralSg = pressureBaseline == 0 ? 0 : pressureBaseline;
+	if (testModeEnabled || !pumpRunning)
+		return neutralSg;
 
-	listenTmc2209Serial();
-	uint16_t sg = tmc2209Driver.SG_RESULT();
+	uint16_t sg;
+	if (!readPressureSgRaw(&sg))
+		return neutralSg;
 	// Library returns 0 on UART read failure; treat that as "no signal"
 	// (= no load) rather than a stall to avoid spurious high-pressure
 	// readings if a packet is occasionally lost.
 	if (sg == 0)
-		return PRESSURE_SG_MAX;
+		return neutralSg;
 	if (sg > PRESSURE_SG_MAX)
 		sg = PRESSURE_SG_MAX;
 	return sg;
@@ -4919,13 +5296,22 @@ uint16_t readPressureSg()
 
 uint8_t pressurePercentFromSg(uint16_t sg)
 {
-	// Higher load = lower SG_RESULT. Compute load relative to the calibrated
-	// baseline (free-running SG value) and map to a 0..100 percentage
-	// according to the user-selected sensitivity scale.
-	uint16_t reference = pressureBaseline == 0 ? PRESSURE_SG_MAX : pressureBaseline;
-	if (sg >= reference)
-		return 0;
-	uint16_t load = (uint16_t)(reference - sg);
+	// Compute load as deviation from the calibrated no-pressure SG value.
+	// Some TMC2209/mechanics combinations report higher SG under pressure,
+	// others lower SG, so use the absolute delta once a baseline is known.
+	uint16_t load;
+	if (pressureBaseline == 0)
+	{
+		load = sg;
+	}
+	else if (sg >= pressureBaseline)
+	{
+		load = (uint16_t)(sg - pressureBaseline);
+	}
+	else
+	{
+		load = (uint16_t)(pressureBaseline - sg);
+	}
 
 	uint8_t scale = pressureScale;
 	if (scale < PRESSURE_SCALE_MIN)
@@ -4944,19 +5330,97 @@ uint8_t pressurePercentFromSg(uint16_t sg)
 	return (uint8_t)percent;
 }
 
+void servicePressureMonitor()
+{
+	if (!pressureMonitorEnabled || !pumpRunning)
+	{
+		pressureLastSampleMillis = 0;
+		return;
+	}
+
+	uint32_t now = millis();
+	if (pressureLastSampleMillis != 0 && (now - pressureLastSampleMillis) < PRESSURE_SAMPLE_INTERVAL_MS)
+		return;
+	pressureLastSampleMillis = now;
+
+	uint16_t sg = readPressureSg();
+	pressureCurrentSg = sg;
+	pressureCurrentBarPercent = pressurePercentFromSg(sg);
+}
+
 void calibratePressureBaseline()
 {
-	uint16_t sg = PRESSURE_SG_MAX;
-	if (tmc2209UartConfigured && tmc2209UartVerified && !testModeEnabled)
+	bool inlinePressureTest = currentScreen == SCREEN_PRESSURE_TEST;
+	if (!testModeEnabled && !pumpRunning && !motorTestRunning && !startupJogRunning)
 	{
-		listenTmc2209Serial();
-		sg = tmc2209Driver.SG_RESULT();
-		if (sg == 0 || sg > PRESSURE_SG_MAX)
-			sg = PRESSURE_SG_MAX;
+		if (inlinePressureTest)
+			pressureTestStatus = PRESSURE_TEST_WAITING;
+		else
+			showStatus(F("Druck nullen"), F("Motor starten"));
+		return;
 	}
+
+	uint32_t total = 0;
+	uint8_t count = 0;
+	if (!testModeEnabled)
+	{
+		for (uint8_t sample = 0; sample < PRESSURE_BASELINE_SAMPLE_COUNT; sample++)
+		{
+			uint16_t sg;
+			if (readPressureSgRaw(&sg) && sg != 0)
+			{
+				total += sg;
+				count++;
+			}
+			serviceWait(PRESSURE_BASELINE_SAMPLE_DELAY_MS);
+		}
+	}
+	if (count == 0)
+	{
+		if (inlinePressureTest)
+			pressureTestStatus = PRESSURE_TEST_ZERO;
+		else
+			showStatus(F("Druck nullen"), F("Kein SG Signal"));
+		return;
+	}
+
+	uint16_t sg = (uint16_t)(total / count);
 	pressureBaseline = sg;
 	savePersistentSettings();
-	showStatus(F("Druck genullt"), F(""));
+	if (inlinePressureTest)
+	{
+		pressureTestRawSg = sg;
+		pressureTestHasSample = true;
+		pressureTestZeroStreak = 0;
+		pressureTestStatus = PRESSURE_TEST_OK;
+	}
+	else
+	{
+		showStatus(F("Druck genullt"), F(""));
+	}
+}
+
+const char *pressureTestStatusText()
+{
+	switch (pressureTestStatus)
+	{
+	case PRESSURE_TEST_WAITING:
+		return "WARTEN";
+	case PRESSURE_TEST_UART_OFF:
+		return "UART AUS";
+	case PRESSURE_TEST_UART_FAIL:
+		return "UARTFAIL";
+	case PRESSURE_TEST_TESTMODE:
+		return "TESTMODE";
+	case PRESSURE_TEST_CRC:
+		return "CRC ERR";
+	case PRESSURE_TEST_ZERO:
+		return "SG NULL";
+	case PRESSURE_TEST_OK:
+		return "SG OK";
+	default:
+		return "BEREIT";
+	}
 }
 
 void applyMaxBolusPercent(uint8_t value)

@@ -1,6 +1,6 @@
 {
     "board": "arduino:renesas_uno:minima",
-    "programmer": "avrispmkii",
-    "port": "COM7",
-    "sketch": "diy-syringe-pump.ino"
+    "port": "COM9",
+    "sketch": "diy-syringe-pump.ino",
+    "output": "..\\diy-syringe-pump-build"
 }
