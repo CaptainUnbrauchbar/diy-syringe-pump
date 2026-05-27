@@ -53,7 +53,7 @@
 #define MAXRPM 120
 #define INVERTDIRECTION true
 #define MMPER360 8.0
-#define MOTOR_CURRENT_MA 700
+#define MOTOR_CURRENT_MA 1200
 
 // Syringe setup
 #define DEFAULT_FLOW_ML_PER_HOUR 50.00
@@ -516,7 +516,8 @@ private:
 #define PRESSURE_ALARM_MAX 10
 #define PRESSURE_ALARM_DEFAULT 7
 #define PRESSURE_BASELINE_DEFAULT 0
-#define PRESSURE_SG_MAX 1023
+#define PRESSURE_SG_MASK 0x01FE
+#define PRESSURE_SG_MAX 510
 // Mapping from the 1..10 scale to the SG-units that count as 100% bar fill.
 // Scale 1 = least sensitive (wider span, bar fills slowly even at high load).
 // Scale 10 = most sensitive (narrow span, bar fills quickly).
@@ -1358,8 +1359,8 @@ void setup()
 	initializeDisplay();
 
 	pinMode(STEP_PIN, OUTPUT);
-	pinMode(ENDSTOP_PIN_FORWARD, INPUT_PULLUP);
-	pinMode(ENDSTOP_PIN_BACKWARD, INPUT_PULLUP);
+	pinMode(ENDSTOP_PIN_FORWARD, INPUT_PULLDOWN);
+	pinMode(ENDSTOP_PIN_BACKWARD, INPUT_PULLDOWN);
 	pinMode(BUZZER_PIN, OUTPUT);
 
 	digitalWrite(STEP_PIN, LOW);
@@ -2406,6 +2407,7 @@ void showPumpScreen()
 	// Pressure bar cache (diff render). 0xFFFF == cache invalid.
 	static uint16_t lastPressureFillPx = 0xFFFF;
 	static uint16_t lastPressureColor = 0;
+	static uint16_t lastPressureSgText = 0xFFFF;
 	static bool lastPressureBarVisible = false;
 
 	bool fullFrame = beginScreen(F("Infusion laeuft"));
@@ -2422,6 +2424,7 @@ void showPumpScreen()
 			lastLineText[i] = '\0';
 		lastPressureFillPx = 0xFFFF;
 		lastPressureColor = 0;
+		lastPressureSgText = 0xFFFF;
 		lastPressureBarVisible = false;
 		pumpCacheValid = true;
 	}
@@ -2510,6 +2513,8 @@ void showPumpScreen()
 	const int16_t pressureFillY = pressureBarY + 1;
 	const int16_t pressureFillW = pressureBarW - 2;
 	const int16_t pressureFillH = pressureBarH - 2;
+	const int16_t pressureSgTextX = (int16_t)(tftWidth - 76);
+	const int16_t pressureSgTextY = pressureBarY - 8;
 
 	if (pressureMonitorEnabled)
 	{
@@ -2567,6 +2572,17 @@ void showPumpScreen()
 		lastPressureFillPx = (uint16_t)fillPx;
 		lastPressureColor = fillColor;
 		lastPressureBarVisible = true;
+		if (needBorder || lastPressureSgText != sg)
+		{
+			char sgText[9];
+			snprintf(sgText, sizeof(sgText), "SG:%3u", (unsigned int)sg);
+			tft.fillRect(pressureSgTextX, pressureSgTextY, 60, 8, TFT_BLACK);
+			tft.setTextSize(1);
+			tft.setTextColor(TFT_WHITE, TFT_BLACK);
+			tft.setCursor(pressureSgTextX, pressureSgTextY);
+			tft.print(sgText);
+			lastPressureSgText = sg;
+		}
 
 		// Sustained-high alarm: only beep after several ticks above the
 		// threshold so a single noisy SG sample does not produce a false
@@ -2595,9 +2611,11 @@ void showPumpScreen()
 		// Monitor was just disabled (or cache invalidated) -> erase any
 		// previously drawn bar so the area stays clean.
 		tft.fillRect(pressureBarX, pressureBarY, pressureBarW, pressureBarH, TFT_BLACK);
+		tft.fillRect(pressureSgTextX, pressureSgTextY, 60, 8, TFT_BLACK);
 		lastPressureBarVisible = false;
 		lastPressureFillPx = 0xFFFF;
 		lastPressureColor = 0;
+		lastPressureSgText = 0xFFFF;
 		pressureHighTicks = 0;
 	}
 
@@ -3940,14 +3958,11 @@ void setupTmc2209Uart()
 	tmc2209Driver.pdn_disable(true);
 	tmc2209Driver.mstep_reg_select(true);
 	tmc2209Driver.microsteps(NOFMICROSTEPS);
+	tmc2209Driver.en_spreadCycle(0);
 	tmc2209Driver.intpol(true);
 	tmc2209Driver.rms_current(MOTOR_CURRENT_MA);
 	tmc2209Driver.toff(3);
-	// Enable StallGuard/CoolStep measurement across the full speed range so
-	// SG_RESULT yields a useful load value at the slow step rates the pump
-	// produces. SGTHRS stays at 0 (default) so the driver never triggers
-	// its DIAG stall output - we only read SG_RESULT as a load indicator.
-	tmc2209Driver.TCOOLTHRS(0xFFFFF);
+	tmc2209Driver.SGTHRS(128);
 
 	tmc2209UartConfigured = true;
 	tmc2209UartVerified = verifyTmc2209Readback();
@@ -4800,7 +4815,7 @@ bool validPressureAlarmLevel(uint8_t value)
 
 bool validPressureBaseline(uint16_t value)
 {
-	return value <= PRESSURE_SG_MAX;
+	return value <= PRESSURE_SG_MAX && (value & 0x0001U) == 0;
 }
 
 bool validMaxBolusPercent(uint8_t value)
@@ -4907,14 +4922,9 @@ uint16_t readPressureSg()
 
 	listenTmc2209Serial();
 	uint16_t sg = tmc2209Driver.SG_RESULT();
-	// Library returns 0 on UART read failure; treat that as "no signal"
-	// (= no load) rather than a stall to avoid spurious high-pressure
-	// readings if a packet is occasionally lost.
-	if (sg == 0)
-		return PRESSURE_SG_MAX;
-	if (sg > PRESSURE_SG_MAX)
-		sg = PRESSURE_SG_MAX;
-	return sg;
+	// Datasheet: SG_RESULT is exposed as a 10-bit register, but bits 9 and 0
+	// are fixed to 0 on the TMC2209. Keep only the documented payload bits.
+	return sg & PRESSURE_SG_MASK;
 }
 
 uint8_t pressurePercentFromSg(uint16_t sg)
@@ -4922,7 +4932,8 @@ uint8_t pressurePercentFromSg(uint16_t sg)
 	// Higher load = lower SG_RESULT. Compute load relative to the calibrated
 	// baseline (free-running SG value) and map to a 0..100 percentage
 	// according to the user-selected sensitivity scale.
-	uint16_t reference = pressureBaseline == 0 ? PRESSURE_SG_MAX : pressureBaseline;
+	sg &= PRESSURE_SG_MASK;
+	uint16_t reference = pressureBaseline == 0 ? PRESSURE_SG_MAX : (pressureBaseline & PRESSURE_SG_MASK);
 	if (sg >= reference)
 		return 0;
 	uint16_t load = (uint16_t)(reference - sg);
@@ -4950,9 +4961,7 @@ void calibratePressureBaseline()
 	if (tmc2209UartConfigured && tmc2209UartVerified && !testModeEnabled)
 	{
 		listenTmc2209Serial();
-		sg = tmc2209Driver.SG_RESULT();
-		if (sg == 0 || sg > PRESSURE_SG_MAX)
-			sg = PRESSURE_SG_MAX;
+		sg = tmc2209Driver.SG_RESULT() & PRESSURE_SG_MASK;
 	}
 	pressureBaseline = sg;
 	savePersistentSettings();
