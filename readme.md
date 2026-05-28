@@ -1,10 +1,10 @@
 # DIY Syringe Pump project
 
-This is the code for a DIY syringe pump project. The project is based on an Arduino UNO microcontroller I had lyring around and uses a stepper motor to control the infusion rate of a syringe. The code includes settings for the motor, syringe, and user interface, as well as functions for controlling the motor and displaying information on an LCD screen.
+This is the code for a DIY syringe pump project. The project targets an Arduino UNO R4 Minima and uses a stepper motor to control the infusion rate of a syringe. The code includes settings for the motor, syringe, and user interface, as well as functions for controlling the motor and displaying information on an LCD screen.
 
 The CAD Files are designed for use with a '50ml BBRAUN Perfusor Syringe' but can easily be adjusted for any other syringe.
 
-Arduino UNO R4 Minima note: the sketch uses `Serial1` on D0/D1 for the TMC2209 UART on non-AVR boards. For the Adafruit TMC2209 breakout with one `UART` pin, connect that single UART signal to both D1/TX1 and D0/RX1 so the sketch can send commands and read driver status. The backward endstop input moves to D11 on UNO R4.
+Arduino UNO R4 Minima note: the sketch uses `Serial1` on D0/D1 for the TMC2209 UART. For the Adafruit TMC2209 breakout with one `UART` pin, connect that single UART signal to both D1/TX1 and D0/RX1 so the sketch can send commands and read driver status. The backward endstop input moves to D11 on UNO R4.
 
 See [hardware-connection-overview.html](hardware-connection-overview.html) for the full pin assignment and wiring overview.
 
@@ -14,7 +14,7 @@ Parts list:
 
 | Item | Qty | Description | Link | Notes |
 | --- | ---: | --- | --- | --- |
-| Arduino Uno | 1 |  |  |  |
+| Arduino UNO R4 Minima | 1 |  |  |  |
 | NEMA 17 Stepper motor | 1 |  |  |  |
 | TMC2209 Stepper driver | 1 |  |  |  |
 | T8 Spindle | 1 | |  |  |

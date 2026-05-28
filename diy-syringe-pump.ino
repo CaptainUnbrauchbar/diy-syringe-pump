@@ -5,17 +5,6 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#if defined(ARDUINO_ARCH_AVR)
-#include <SoftwareSerial.h>
-#include <avr/interrupt.h>
-#include <avr/io.h>
-#include <avr/pgmspace.h>
-#include <avr/wdt.h>
-
-#if defined(ARDUINO_AVR_UNO) && !defined(__AVR_ATmega328P__)
-#include <avr/iom328p.h>
-#endif
-#else
 #ifndef PROGMEM
 #define PROGMEM
 #endif
@@ -25,32 +14,21 @@
 #ifndef pgm_read_byte
 #define pgm_read_byte(address_short) (*(const uint8_t *)(address_short))
 #endif
-#endif
-
-#ifndef PD2
-#define PD2 2
-#endif
-
-#ifndef PB4
-#define PB4 4
-#endif
-
-#ifndef PC1
-#define PC1 1
-#endif
-
-#ifndef PC2
-#define PC2 2
-#endif
 
 /********************************************************************
-  Basic syringe pump firmware for Arduino Uno
+	Basic syringe pump firmware for Arduino UNO R4 Minima
 ********************************************************************/
 
 // Stepper motor and mechanics
-#define NOFMICROSTEPS 32
+#define NOFMICROSTEPS 64
 #define NOFSTEPSPER360 200
-#define MAXRPM 120
+#define MAXRPM 180
+// Manual syringe-loading jog is loop-limited because STEP pulses are
+// generated in software while the touchscreen ADC is being polled. Use a
+// separate, much coarser microstep setting here so each emitted step moves
+// the carriage farther and the jog feels responsive.
+#define STARTUP_JOG_MICROSTEPS 4
+#define STARTUP_JOG_MAX_RPM 300
 #define INVERTDIRECTION true
 #define MMPER360 8.0
 #define MOTOR_CURRENT_MA 1200
@@ -82,29 +60,20 @@
 #define DEFAULT_STARTUP_JOG_SPEED_PERCENT 50
 #define MIN_STARTUP_JOG_SPEED_PERCENT 10
 #define MAX_STARTUP_JOG_SPEED_PERCENT 100
-#define STARTUP_JOG_SPEED_STEP_PERCENT 5
+#define STARTUP_JOG_SPEED_STEP_PERCENT 10
 #define BOLUS_DURATION_MS 10000UL
 #define BOLUS_MENU_TIMEOUT_MS 5000UL
 #define STATUS_DISPLAY_MS 1200UL
 #define MOTOR_TEST_STEP_RATE_HZ 10.0
 
-// Arduino Uno + parallel TFT shield pin plan.
+// Arduino UNO R4 Minima + parallel TFT shield pin plan.
 // The TFT shield uses D2-D9 and A0-A4. Its SD-card SPI pins are repurposed.
 // TMC2209 UART config replaces the separate DIR and ENABLE pins, but STEP
 // pulses are still required; the TMC2209 cannot generate motion from UART only.
 #define STEP_PIN 10
-#if defined(ARDUINO_ARCH_AVR)
-#define TMC2209_UART_RX_PIN 11
-#define TMC2209_UART_TX_PIN 12
-#define ENDSTOP_PIN_FORWARD A5
-#define ENDSTOP_PIN_BACKWARD 0
-#else
 // UNO R4 Minima has hardware Serial1 on D0/D1. Move the backward endstop to D11.
-#define TMC2209_UART_RX_PIN 0
-#define TMC2209_UART_TX_PIN 1
 #define ENDSTOP_PIN_FORWARD A5
 #define ENDSTOP_PIN_BACKWARD 11
-#endif
 #define BUZZER_PIN 13
 
 #define TFT_TOUCH_YP A3
@@ -112,17 +81,12 @@
 #define TFT_TOUCH_YM 9
 #define TFT_TOUCH_XP 8
 
-#define TMC2209_UART_BAUD 19200UL
+#define TMC2209_UART_BAUD 250000UL
 #define TMC2209_UART_DRIVER_ADDRESS 0
 #define TMC2209_UART_R_SENSE 0.11f
 #define TMC2209_EXPECTED_VERSION 0x21
 #define TMC2209_READBACK_ATTEMPTS 3
 #define TMC2209_CURRENT_TOLERANCE_MA 100
-
-#if defined(ARDUINO_ARCH_AVR)
-#define STEP_PORT PORTB
-#define STEP_MASK 0x04
-#endif
 
 #define DEBOUNCE_DELAY_MS 50
 #define DISPLAY_UPDATE_MS 250
@@ -170,16 +134,10 @@
 #define TFT_DARKGREY 0x7BEF
 #define TFT_NAVY 0x000F
 
-// Cached fast pin access: portOutputRegister/digitalPinToBitMask exist on
-// both AVR and the Renesas UNO R4 cores, but the return widths differ. Use
-// typedefs so the same code path works everywhere.
-#if defined(ARDUINO_ARCH_AVR)
-typedef volatile uint8_t *FastPortReg;
-typedef uint8_t FastPortMask;
-#else
+// Cached fast pin access: on the Renesas UNO R4 core the register and mask
+// widths differ from classic AVR boards, so use UNO R4-sized types here.
 typedef volatile uint16_t *FastPortReg;
 typedef uint16_t FastPortMask;
-#endif
 
 class UnoParallelTft : public Adafruit_GFX
 {
@@ -510,19 +468,31 @@ private:
 #define SETTINGS_MENU_MOTOR_TEST 12
 #define SETTINGS_MENU_SUPPORT 13
 #define PRESSURE_SCALE_MIN 1
-#define PRESSURE_SCALE_MAX 10
-#define PRESSURE_SCALE_DEFAULT 5
+#define PRESSURE_SCALE_MAX 20
+#define PRESSURE_SCALE_DEFAULT 10
+#define PRESSURE_SCALE_REFERENCE 10
 #define PRESSURE_ALARM_MIN 1
 #define PRESSURE_ALARM_MAX 10
 #define PRESSURE_ALARM_DEFAULT 7
-#define PRESSURE_BASELINE_DEFAULT 0
+#define PRESSURE_EMPTY_BAR_SG 14
+#define PRESSURE_FULL_BAR_SG 0
+#define PRESSURE_BASELINE_DEFAULT PRESSURE_EMPTY_BAR_SG
 #define PRESSURE_SG_MASK 0x01FE
 #define PRESSURE_SG_MAX 510
-// Mapping from the 1..10 scale to the SG-units that count as 100% bar fill.
-// Scale 1 = least sensitive (wider span, bar fills slowly even at high load).
-// Scale 10 = most sensitive (narrow span, bar fills quickly).
-#define PRESSURE_FULL_SCALE_UNITS_BASE 50
+// Observed useful SG range for this pump: SG=14 is the empty bar reference,
+// SG=0 is the full bar point. Scale 10 maps exactly across that 14-unit span;
+// scales 11..20 compress the span further for extra sensitivity.
 #define PRESSURE_ALARM_SUSTAIN_TICKS 3
+// Exponential moving average shift used to smooth SG_RESULT readings.
+// alpha = 1 / (1 << shift); larger shift = more smoothing.
+#define PRESSURE_SAMPLE_FILTER_SHIFT 3
+// Number of SG samples collected after pump start to derive an automatic
+// unloaded baseline when the user has not run a manual zero calibration.
+#define PRESSURE_AUTO_BASELINE_SAMPLES 16
+// Number of samples averaged by the manual calibratePressureBaseline() routine.
+#define PRESSURE_MANUAL_BASELINE_SAMPLES 16
+// Spacing in ms between the manual baseline samples.
+#define PRESSURE_MANUAL_BASELINE_SAMPLE_MS 60
 #define SETTINGS_SUPPORT_TIMEOUT_MS 10000UL
 #define STARTUP_SPLASH_MS 1500UL
 #define MAIN_MENU_COUNT 3
@@ -1005,11 +975,7 @@ void drawValueScreenP(PGM_P title, const char *value, uint8_t cursorColumn, bool
 	renderValueScreenBody(fullFrame, value, cursorColumn, cursorVisible);
 }
 
-#if defined(ARDUINO_ARCH_AVR)
-SoftwareSerial tmc2209Serial(TMC2209_UART_RX_PIN, TMC2209_UART_TX_PIN);
-#else
 HardwareSerial &tmc2209Serial = Serial1;
-#endif
 TMC2209Stepper tmc2209Driver(&tmc2209Serial, TMC2209_UART_R_SENSE, TMC2209_UART_DRIVER_ADDRESS);
 
 enum Button
@@ -1062,15 +1028,10 @@ enum UiScreen
 
 volatile int32_t stepCounter = 0;
 volatile bool stepPulseHigh = false;
-#if defined(ARDUINO_ARCH_AVR)
-volatile uint16_t timer1HighPulseOcr = 0;
-volatile uint16_t timer1LowPulseOcr = 0;
-#else
 volatile bool motorClockRunning = false;
 volatile uint32_t motorClockHighPulseUs = STEP_PULSE_US;
 volatile uint32_t motorClockLowPulseUs = 0;
 volatile uint32_t motorClockNextTransitionMicros = 0;
-#endif
 volatile bool endstopInterruptLatched = false;
 volatile bool motorClockDirectionForward = true;
 volatile bool motorClockStopOnAnyEndstop = true;
@@ -1093,6 +1054,11 @@ uint16_t pressureBaseline = PRESSURE_BASELINE_DEFAULT;
 uint16_t pressureCurrentSg = PRESSURE_SG_MAX;
 uint8_t pressureCurrentBarPercent = 0;
 uint8_t pressureHighTicks = 0;
+uint16_t pressureFilteredSg = 0;
+bool pressureFilteredSgValid = false;
+uint32_t pressureAutoBaselineSum = 0;
+uint8_t pressureAutoBaselineCount = 0;
+bool pressureAutoBaselineDone = false;
 uint32_t pressureLastAlarmBeepMillis = 0;
 uint8_t maxBolusPercent = DEFAULT_MAX_BOLUS_PERCENT;
 uint8_t startupJogSpeedPercent = DEFAULT_STARTUP_JOG_SPEED_PERCENT;
@@ -1264,7 +1230,6 @@ void serviceMotorClock();
 void watchdogDelay(uint16_t durationMs);
 void serviceWait(uint16_t durationMs);
 void setFlow(float nextFlow);
-void listenTmc2209Serial();
 void setupTmc2209Uart();
 bool verifyTmc2209Readback();
 bool tmc2209CurrentReadbackOk(uint16_t currentMa);
@@ -1282,15 +1247,11 @@ bool endstopActiveForDirection(bool forward);
 void enableMotorDriver();
 void disableMotorDriver();
 void configureEndstopInterrupts();
-void stopMotorClockFromIsr();
+void stopMotorClock();
 void setStepPinLow();
 void setStepPinHigh();
 bool startPump();
 void stopPump(PumpStopReason reason);
-#if defined(ARDUINO_ARCH_AVR)
-uint16_t timerPrescalerForIndex(uint8_t index);
-uint8_t timerClockBitsForIndex(uint8_t index);
-#endif
 void enableTimer1Interrupt();
 void enableTimer1InterruptPreservePhase();
 bool timerIsRunning();
@@ -1351,11 +1312,6 @@ void calibratePressureBaseline();
 
 void setup()
 {
-#if defined(ARDUINO_ARCH_AVR)
-	MCUSR = 0;
-	wdt_disable();
-#endif
-
 	initializeDisplay();
 
 	pinMode(STEP_PIN, OUTPUT);
@@ -1370,9 +1326,6 @@ void setup()
 	setupTmc2209Uart();
 	disableMotorDriver();
 
-#if defined(ARDUINO_ARCH_AVR)
-	wdt_enable(WDTO_1S);
-#endif
 	loadPersistentSettings();
 
 	startupScreenStartMillis = millis();
@@ -1535,7 +1488,11 @@ int16_t averageAnalogRead(uint8_t pin)
 {
 	uint32_t total = 0;
 	for (uint8_t sample = 0; sample < TOUCH_ANALOG_SAMPLES; sample++)
+	{
+		serviceMotorClock();
 		total += analogRead(pin);
+		serviceMotorClock();
+	}
 	return (int16_t)(total / TOUCH_ANALOG_SAMPLES);
 }
 
@@ -3845,9 +3802,6 @@ void cancelBuzzerBeeps()
 
 void serviceWatchdog()
 {
-#if defined(ARDUINO_ARCH_AVR)
-	wdt_reset();
-#endif
 }
 
 void watchdogDelay(uint16_t durationMs)
@@ -3870,32 +3824,16 @@ void serviceWait(uint16_t durationMs)
 
 void setStepPinLow()
 {
-#if defined(ARDUINO_ARCH_AVR)
-	STEP_PORT &= ~STEP_MASK;
-#else
 	digitalWrite(STEP_PIN, LOW);
-#endif
 }
 
 void setStepPinHigh()
 {
-#if defined(ARDUINO_ARCH_AVR)
-	STEP_PORT |= STEP_MASK;
-#else
 	digitalWrite(STEP_PIN, HIGH);
-#endif
-}
-
-void listenTmc2209Serial()
-{
-#if defined(ARDUINO_ARCH_AVR)
-	tmc2209Serial.listen();
-#endif
 }
 
 void serviceMotorClock()
 {
-#if !defined(ARDUINO_ARCH_AVR)
 	if (!motorClockRunning)
 		return;
 
@@ -3906,7 +3844,7 @@ void serviceMotorClock()
 	if (motorClockStopOnAnyEndstop ? anyEndstopActive() : endstopActiveForDirection(motorClockDirectionForward))
 	{
 		endstopInterruptLatched = true;
-		stopMotorClockFromIsr();
+		stopMotorClock();
 		return;
 	}
 
@@ -3923,7 +3861,6 @@ void serviceMotorClock()
 		stepPulseHigh = true;
 		motorClockNextTransitionMicros = nowMicros + motorClockHighPulseUs;
 	}
-#endif
 }
 
 void setFlow(float nextFlow)
@@ -3953,16 +3890,34 @@ void setupTmc2209Uart()
 	tmc2209ReadbackCurrentMa = 0;
 
 	tmc2209Serial.begin(TMC2209_UART_BAUD);
-	listenTmc2209Serial();
 	tmc2209Driver.begin();
-	tmc2209Driver.pdn_disable(true);
-	tmc2209Driver.mstep_reg_select(true);
-	tmc2209Driver.microsteps(NOFMICROSTEPS);
-	tmc2209Driver.en_spreadCycle(0);
-	tmc2209Driver.intpol(true);
+	tmc2209Driver.toff(4);
+	tmc2209Driver.pdn_disable(1);
+	tmc2209Driver.en_spreadCycle(0);  // Force StealthChop; required for StallGuard4
+	tmc2209Driver.mstep_reg_select(1);
 	tmc2209Driver.rms_current(MOTOR_CURRENT_MA);
-	tmc2209Driver.toff(3);
-	tmc2209Driver.SGTHRS(128);
+	tmc2209Driver.microsteps(NOFMICROSTEPS);
+	tmc2209Driver.intpol(1);
+
+	// CoolStep is intentionally disabled. Datasheet §12.3 warns that dynamic
+	// current scaling driven by CoolStep destabilises SG_RESULT, and CoolStep
+	// itself is silently inactive once IRUN drops below 10. For a load-sensing
+	// use case we want a constant current envelope so the SG reading reflects
+	// mechanical load and nothing else.
+	tmc2209Driver.semin(0);
+	tmc2209Driver.semax(0);
+	tmc2209Driver.sedn(0);
+
+	// Force StealthChop at all velocities so SG4 is always the active stall
+	// detector (SpreadCycle uses SG2-style coil-current sensing instead).
+	tmc2209Driver.TPWMTHRS(0);
+
+	// We poll SG_RESULT directly via UART and do not use the DIAG stall pin,
+	// so the on-chip stall threshold is parked at 0 to prevent spurious DIAG
+	// activity. TCOOLTHRS is left at maximum so SG_RESULT updates at every
+	// step rate the pump can produce.
+	tmc2209Driver.SGTHRS(0);
+	tmc2209Driver.TCOOLTHRS(0xFFFFF);
 
 	tmc2209UartConfigured = true;
 	tmc2209UartVerified = verifyTmc2209Readback();
@@ -3972,7 +3927,6 @@ bool verifyTmc2209Readback()
 {
 	for (uint8_t attempt = 0; attempt < TMC2209_READBACK_ATTEMPTS; attempt++)
 	{
-		listenTmc2209Serial();
 		tmc2209ConnectionStatus = tmc2209Driver.test_connection();
 		if (tmc2209ConnectionStatus == 0)
 		{
@@ -4040,8 +3994,13 @@ bool startStartupMotorJog(bool forward)
 	setMotorDirection(forward);
 
 	float jogSpeedFactor = (float)startupJogSpeedPercent / 100.0;
-	if (!configureTimer1(maxStepRateHz() * jogSpeedFactor))
+	float startupJogMaxStepRateHz =
+		(float)STARTUP_JOG_MAX_RPM * (float)NOFSTEPSPER360 * (float)STARTUP_JOG_MICROSTEPS / 60.0;
+	if (!configureTimer1(startupJogMaxStepRateHz * jogSpeedFactor))
 		return false;
+
+	if (!testModeEnabled && tmc2209UartConfigured)
+		tmc2209Driver.microsteps(STARTUP_JOG_MICROSTEPS);
 
 	motorClockDirectionForward = forward;
 	motorClockStopOnAnyEndstop = false;
@@ -4058,6 +4017,8 @@ void stopStartupMotorJog()
 		return;
 
 	disableTimer1();
+	if (!testModeEnabled && tmc2209UartConfigured)
+		tmc2209Driver.microsteps(NOFMICROSTEPS);
 	disableMotorDriver();
 	startupJogRunning = false;
 }
@@ -4187,14 +4148,10 @@ void configureEndstopInterrupts()
 	endstopInterruptLatched = false;
 }
 
-void stopMotorClockFromIsr()
+void stopMotorClock()
 {
-	// AVR calls this from the Timer1 ISR; UNO R4 calls it from serviceMotorClock().
-#if defined(ARDUINO_ARCH_AVR)
-	TIMSK1 &= ~(1 << OCIE1A);
-#else
+	// On UNO R4 this is called from the software motor clock service.
 	motorClockRunning = false;
-#endif
 	setStepPinLow();
 }
 
@@ -4245,6 +4202,13 @@ bool startPump()
 
 	baseInfusionFlowMlPerHour = flowMlPerHour;
 	bolusActive = false;
+	// Reset pressure smoothing & auto-baseline state so each new run gets
+	// a fresh reference (unless the user has a persisted manual baseline).
+	pressureFilteredSgValid = false;
+	pressureAutoBaselineSum = 0;
+	pressureAutoBaselineCount = 0;
+	pressureAutoBaselineDone = (pressureBaseline != 0);
+	pressureHighTicks = 0;
 	enableMotorDriver();
 	enableTimer1Interrupt();
 	pumpStartMillis = millis();
@@ -4299,46 +4263,25 @@ void enableTimer1Interrupt()
 {
 	noInterrupts();
 	stepPulseHigh = false;
-#if defined(ARDUINO_ARCH_AVR)
-	TCNT1 = 0;
-	OCR1A = timer1LowPulseOcr;
-	TIFR1 |= (1 << OCF1A);
-	TIMSK1 |= (1 << OCIE1A);
-#else
 	setStepPinLow();
 	motorClockNextTransitionMicros = micros() + motorClockLowPulseUs;
 	motorClockRunning = true;
-#endif
 	interrupts();
 }
 
 void enableTimer1InterruptPreservePhase()
 {
-#if defined(ARDUINO_ARCH_AVR)
-	// Schaltet OCIE1A scharf, ohne TCNT1/OCR1A anzufassen.
-	// Wird nach configureTimer1PreservePhase() benutzt, damit der
-	// dort proportional skalierte Zaehlerstand erhalten bleibt.
-	noInterrupts();
-	TIFR1 |= (1 << OCF1A);
-	TIMSK1 |= (1 << OCIE1A);
-	interrupts();
-#else
 	noInterrupts();
 	if (!motorClockRunning)
 		motorClockNextTransitionMicros = micros() + (stepPulseHigh ? motorClockHighPulseUs : motorClockLowPulseUs);
 	motorClockRunning = true;
 	interrupts();
-#endif
 }
 
 bool timerIsRunning()
 {
 	noInterrupts();
-#if defined(ARDUINO_ARCH_AVR)
-	bool running = (TIMSK1 & (1 << OCIE1A)) != 0;
-#else
 	bool running = motorClockRunning;
-#endif
 	interrupts();
 	return running;
 }
@@ -4348,36 +4291,12 @@ bool timerCanRepresentStepRate(float stepRateHz)
 	if (stepRateHz <= 0.0)
 		return false;
 
-#if defined(ARDUINO_ARCH_AVR)
-	for (uint8_t prescalerIndex = 0; prescalerIndex < 5; prescalerIndex++)
-	{
-		uint16_t prescaler = timerPrescalerForIndex(prescalerIndex);
-		float totalTicksFloat = (float)F_CPU / ((float)prescaler * stepRateHz);
-		if (totalTicksFloat < 1.0 || totalTicksFloat > 65536.5)
-			continue;
-
-		uint32_t totalTicks = (uint32_t)(totalTicksFloat + 0.5);
-		uint32_t highTicks = (((uint32_t)(F_CPU / 1000000UL) * STEP_PULSE_US) + prescaler - 1) / prescaler;
-		if (highTicks < 1)
-			highTicks = 1;
-
-		if (totalTicks > highTicks && totalTicks <= 65536UL)
-		{
-			uint32_t lowTicks = totalTicks - highTicks;
-			if (lowTicks >= 1 && lowTicks <= 65536UL && highTicks <= 65536UL)
-				return true;
-		}
-	}
-
-	return false;
-#else
 	float totalPulseUsFloat = 1000000.0 / stepRateHz;
 	if (totalPulseUsFloat > 4294967295.0)
 		return false;
 
 	uint32_t totalPulseUs = (uint32_t)(totalPulseUsFloat + 0.5);
 	return totalPulseUs > STEP_PULSE_US + 1UL;
-#endif
 }
 
 bool configureTimer1(float stepRateHz)
@@ -4395,70 +4314,6 @@ bool configureTimer1Internal(float stepRateHz, bool preservePhase)
 	if (!timerCanRepresentStepRate(stepRateHz))
 		return false;
 
-#if defined(ARDUINO_ARCH_AVR)
-	bool preserveLowPhase = false;
-	uint16_t previousCounter = 0;
-	uint16_t previousCompare = 0;
-	if (preservePhase)
-	{
-		noInterrupts();
-		preserveLowPhase = (TIMSK1 & (1 << OCIE1A)) != 0 && !stepPulseHigh;
-		previousCounter = TCNT1;
-		previousCompare = OCR1A;
-		interrupts();
-	}
-
-	for (uint8_t prescalerIndex = 0; prescalerIndex < 5; prescalerIndex++)
-	{
-		uint16_t prescaler = timerPrescalerForIndex(prescalerIndex);
-		float totalTicksFloat = (float)F_CPU / ((float)prescaler * stepRateHz);
-		if (totalTicksFloat < 1.0 || totalTicksFloat > 65536.5)
-			continue;
-
-		uint32_t totalTicks = (uint32_t)(totalTicksFloat + 0.5);
-		uint32_t highTicks = (((uint32_t)(F_CPU / 1000000UL) * STEP_PULSE_US) + prescaler - 1) / prescaler;
-		if (highTicks < 1)
-			highTicks = 1;
-
-		if (totalTicks > highTicks && totalTicks <= 65536UL)
-		{
-			uint32_t lowTicks = totalTicks - highTicks;
-			if (lowTicks < 1 || lowTicks > 65536UL || highTicks > 65536UL)
-				continue;
-
-			uint16_t initialCounter = 0;
-			if (preserveLowPhase && previousCompare > 0)
-			{
-				uint32_t previousTicks = (uint32_t)previousCompare + 1UL;
-				uint32_t boundedCounter = previousCounter;
-				if (boundedCounter >= previousTicks)
-					boundedCounter = previousTicks - 1UL;
-
-				uint32_t scaledCounter = (boundedCounter * lowTicks) / previousTicks;
-				if (scaledCounter >= lowTicks)
-					scaledCounter = lowTicks - 1UL;
-				initialCounter = (uint16_t)scaledCounter;
-			}
-
-			noInterrupts();
-			TCCR1A = 0;
-			TCCR1B = 0;
-			stepPulseHigh = false;
-			timer1HighPulseOcr = (uint16_t)highTicks - 1;
-			timer1LowPulseOcr = (uint16_t)lowTicks - 1;
-			OCR1A = timer1LowPulseOcr;
-			TCNT1 = initialCounter;
-			setStepPinLow();
-			TIFR1 |= (1 << OCF1A);
-			TIMSK1 &= ~(1 << OCIE1A);
-			TCCR1B = (1 << WGM12) | timerClockBitsForIndex(prescalerIndex);
-			interrupts();
-			return true;
-		}
-	}
-
-	return false;
-#else
 	uint32_t totalPulseUs = (uint32_t)(1000000.0 / stepRateHz + 0.5);
 	if (totalPulseUs <= STEP_PULSE_US + 1UL)
 		return false;
@@ -4475,57 +4330,12 @@ bool configureTimer1Internal(float stepRateHz, bool preservePhase)
 	}
 	interrupts();
 	return true;
-#endif
 }
-
-#if defined(ARDUINO_ARCH_AVR)
-
-uint16_t timerPrescalerForIndex(uint8_t index)
-{
-	switch (index)
-	{
-	case 0:
-		return 1;
-	case 1:
-		return 8;
-	case 2:
-		return 64;
-	case 3:
-		return 256;
-	default:
-		return 1024;
-	}
-}
-
-uint8_t timerClockBitsForIndex(uint8_t index)
-{
-	switch (index)
-	{
-	case 0:
-		return (1 << CS10);
-	case 1:
-		return (1 << CS11);
-	case 2:
-		return (1 << CS11) | (1 << CS10);
-	case 3:
-		return (1 << CS12);
-	default:
-		return (1 << CS12) | (1 << CS10);
-	}
-}
-
-#endif
 
 void disableTimer1()
 {
 	noInterrupts();
-#if defined(ARDUINO_ARCH_AVR)
-	TIMSK1 &= ~(1 << OCIE1A);
-	TCCR1A = 0;
-	TCCR1B = 0;
-#else
 	motorClockRunning = false;
-#endif
 	stepPulseHigh = false;
 	setStepPinLow();
 	interrupts();
@@ -4918,13 +4728,55 @@ uint16_t readPressureSg()
 	// the motor is not stepping, since StallGuard4 needs continuous step
 	// pulses to produce a meaningful value.
 	if (!tmc2209UartConfigured || !tmc2209UartVerified || testModeEnabled || !pumpRunning)
+	{
+		pressureFilteredSgValid = false;
+		pressureAutoBaselineSum = 0;
+		pressureAutoBaselineCount = 0;
+		pressureAutoBaselineDone = false;
 		return PRESSURE_SG_MAX;
+	}
 
-	listenTmc2209Serial();
-	uint16_t sg = tmc2209Driver.SG_RESULT();
 	// Datasheet: SG_RESULT is exposed as a 10-bit register, but bits 9 and 0
 	// are fixed to 0 on the TMC2209. Keep only the documented payload bits.
-	return sg & PRESSURE_SG_MASK;
+	uint16_t raw = tmc2209Driver.SG_RESULT() & PRESSURE_SG_MASK;
+
+	// Exponential moving average to smooth out the SG noise. SG_RESULT only
+	// refreshes once per full step, so at pump speeds (sub-1 RPM) successive
+	// reads can return identical values for a while followed by a sudden
+	// jump. The EWMA hides the staircase and improves bar stability.
+	if (!pressureFilteredSgValid)
+	{
+		pressureFilteredSg = raw;
+		pressureFilteredSgValid = true;
+	}
+	else
+	{
+		int16_t delta = (int16_t)raw - (int16_t)pressureFilteredSg;
+		pressureFilteredSg = (uint16_t)((int16_t)pressureFilteredSg + (delta >> PRESSURE_SAMPLE_FILTER_SHIFT));
+	}
+
+	// Auto-baseline: if the user has never run a manual zero calibration,
+	// average the first N unloaded samples after pump start and adopt that
+	// as the reference. Without this the bar can never read 0% because the
+	// old theoretical fallback reference of 510 is unrealistically high.
+	if (!pressureAutoBaselineDone && pressureBaseline == 0)
+	{
+		if (raw > 0)
+		{
+			pressureAutoBaselineSum += raw;
+			pressureAutoBaselineCount++;
+			if (pressureAutoBaselineCount >= PRESSURE_AUTO_BASELINE_SAMPLES)
+			{
+				uint16_t avg = (uint16_t)(pressureAutoBaselineSum / pressureAutoBaselineCount);
+				if (avg > PRESSURE_EMPTY_BAR_SG)
+					avg = PRESSURE_EMPTY_BAR_SG;
+				pressureBaseline = avg & PRESSURE_SG_MASK;
+				pressureAutoBaselineDone = true;
+			}
+		}
+	}
+
+	return pressureFilteredSg & PRESSURE_SG_MASK;
 }
 
 uint8_t pressurePercentFromSg(uint16_t sg)
@@ -4933,7 +4785,13 @@ uint8_t pressurePercentFromSg(uint16_t sg)
 	// baseline (free-running SG value) and map to a 0..100 percentage
 	// according to the user-selected sensitivity scale.
 	sg &= PRESSURE_SG_MASK;
-	uint16_t reference = pressureBaseline == 0 ? PRESSURE_SG_MAX : (pressureBaseline & PRESSURE_SG_MASK);
+	uint16_t reference = pressureBaseline == 0
+		? PRESSURE_EMPTY_BAR_SG
+		: (pressureBaseline & PRESSURE_SG_MASK);
+	if (reference > PRESSURE_EMPTY_BAR_SG)
+		reference = PRESSURE_EMPTY_BAR_SG;
+	if (reference <= PRESSURE_FULL_BAR_SG)
+		return sg <= PRESSURE_FULL_BAR_SG ? 100 : 0;
 	if (sg >= reference)
 		return 0;
 	uint16_t load = (uint16_t)(reference - sg);
@@ -4943,10 +4801,20 @@ uint8_t pressurePercentFromSg(uint16_t sg)
 		scale = PRESSURE_SCALE_MIN;
 	if (scale > PRESSURE_SCALE_MAX)
 		scale = PRESSURE_SCALE_MAX;
-	// Full-scale span in SG units decreases as the scale value increases,
-	// i.e. higher scale = more sensitive bar.
-	uint16_t fullScaleUnits = (uint16_t)(PRESSURE_FULL_SCALE_UNITS_BASE *
-		(uint16_t)((PRESSURE_SCALE_MAX + 1) - scale));
+	uint16_t emptyToFullUnits = reference - PRESSURE_FULL_BAR_SG;
+	uint16_t fullScaleUnits = emptyToFullUnits;
+	if (scale < PRESSURE_SCALE_REFERENCE)
+	{
+		fullScaleUnits = (uint16_t)(emptyToFullUnits *
+			(uint16_t)((PRESSURE_SCALE_REFERENCE + 1) - scale));
+	}
+	else if (scale > PRESSURE_SCALE_REFERENCE)
+	{
+		uint8_t extraSensitivity = scale - PRESSURE_SCALE_REFERENCE;
+		fullScaleUnits = emptyToFullUnits > extraSensitivity
+			? (uint16_t)(emptyToFullUnits - extraSensitivity)
+			: 1;
+	}
 	if (fullScaleUnits == 0)
 		fullScaleUnits = 1;
 	uint32_t percent = ((uint32_t)load * 100UL) / (uint32_t)fullScaleUnits;
@@ -4957,13 +4825,44 @@ uint8_t pressurePercentFromSg(uint16_t sg)
 
 void calibratePressureBaseline()
 {
-	uint16_t sg = PRESSURE_SG_MAX;
-	if (tmc2209UartConfigured && tmc2209UartVerified && !testModeEnabled)
+	if (!tmc2209UartConfigured || !tmc2209UartVerified || testModeEnabled)
 	{
-		listenTmc2209Serial();
-		sg = tmc2209Driver.SG_RESULT() & PRESSURE_SG_MASK;
+		showStatus(F("Treiber n. bereit"), F(""));
+		return;
 	}
-	pressureBaseline = sg;
+	// SG_RESULT is only meaningful while the motor is actually stepping.
+	// Refuse to calibrate from an idle motor; the user must start the pump
+	// (or a self-test jog) first so we sample real running conditions.
+	if (!pumpRunning)
+	{
+		showStatus(F("Pumpe nicht aktiv"), F("Erst starten"));
+		return;
+	}
+
+	uint32_t sum = 0;
+	uint8_t valid = 0;
+	for (uint8_t i = 0; i < PRESSURE_MANUAL_BASELINE_SAMPLES; i++)
+	{
+		uint16_t s = tmc2209Driver.SG_RESULT() & PRESSURE_SG_MASK;
+		if (s > 0)
+		{
+			sum += s;
+			valid++;
+		}
+		serviceWait(PRESSURE_MANUAL_BASELINE_SAMPLE_MS);
+	}
+	if (valid == 0)
+	{
+		showStatus(F("Kein SG-Signal"), F(""));
+		return;
+	}
+	uint16_t baseline = (uint16_t)((sum / valid) & PRESSURE_SG_MASK);
+	if (baseline > PRESSURE_EMPTY_BAR_SG)
+		baseline = PRESSURE_EMPTY_BAR_SG;
+	pressureBaseline = baseline;
+	pressureAutoBaselineDone = true;
+	pressureAutoBaselineSum = 0;
+	pressureAutoBaselineCount = 0;
 	savePersistentSettings();
 	showStatus(F("Druck genullt"), F(""));
 }
@@ -5091,28 +4990,3 @@ void writePersistentSettings(const PersistedSettings *settings)
 		updateEepromByte(SETTINGS_EEPROM_ADDRESS + index, bytes[index]);
 }
 
-#if defined(ARDUINO_ARCH_AVR)
-ISR(TIMER1_COMPA_vect)
-{
-	if (motorClockStopOnAnyEndstop ? anyEndstopActive() : endstopActiveForDirection(motorClockDirectionForward))
-	{
-		endstopInterruptLatched = true;
-		stopMotorClockFromIsr();
-		return;
-	}
-
-	if (stepPulseHigh)
-	{
-		setStepPinLow();
-		stepPulseHigh = false;
-		stepCounter++;
-		OCR1A = timer1LowPulseOcr;
-	}
-	else
-	{
-		setStepPinHigh();
-		stepPulseHigh = true;
-		OCR1A = timer1HighPulseOcr;
-	}
-}
-#endif
